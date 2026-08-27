@@ -1,0 +1,59 @@
+ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+ggml_metal_library_init: using embedded metal library
+ggml_metal_library_compile_all: compiled 'fa' library in 0.037 sec
+ggml_metal_library_compile_all: compiled 'mul_mv' library in 0.009 sec
+ggml_metal_library_compile_all: compiled 'mul_mm' library in 0.043 sec
+ggml_metal_library_compile_all: compiled 'quantize' library in 0.039 sec
+ggml_metal_library_compile_all: compiled 'softmax' library in 0.004 sec
+ggml_metal_library_compile_all: compiled 'norm' library in 0.003 sec
+ggml_metal_library_compile_all: compiled 'unary' library in 0.003 sec
+ggml_metal_library_compile_all: compiled 'binbcast' library in 0.004 sec
+ggml_metal_library_compile_all: compiled 'reduce' library in 0.039 sec
+ggml_metal_library_compile_all: compiled 'tri' library in 0.004 sec
+ggml_metal_library_compile_all: compiled 'ssm' library in 0.039 sec
+ggml_metal_library_compile_all: compiled 'wkv' library in 0.039 sec
+ggml_metal_library_compile_all: compiled 'gated_delta_net' library in 0.044 sec
+ggml_metal_library_compile_all: compiled 'solve_tri' library in 0.045 sec
+ggml_metal_library_compile_all: compiled 'rope' library in 0.044 sec
+ggml_metal_library_compile_all: compiled 'conv' library in 0.045 sec
+ggml_metal_library_compile_all: compiled 'upscale' library in 0.037 sec
+ggml_metal_library_compile_all: compiled 'argsort' library in 0.045 sec
+ggml_metal_library_compile_all: compiled 'pool' library in 0.037 sec
+ggml_metal_library_compile_all: compiled 'misc' library in 0.043 sec
+ggml_metal_library_compile_all: loaded 20 libraries from embedded data in 0.045 sec (max single = 0.045 sec)
+ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+ggml_metal_device_init: GPU name:   MTL0 (Apple M3)
+ggml_metal_device_init: GPU family: MTLGPUFamilyApple9  (1009)
+ggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)
+ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+ggml_metal_device_init: simdgroup reduction   = true
+ggml_metal_device_init: simdgroup matrix mul. = true
+ggml_metal_device_init: has unified memory    = true
+ggml_metal_device_init: has bfloat            = true
+ggml_metal_device_init: has tensor            = false
+ggml_metal_device_init: use residency sets    = true
+ggml_metal_device_init: use shared buffers    = true
+ggml_metal_device_init: recommendedMaxWorkingSetSize  = 12713.12 MB
+ggml_metal_init: allocating
+ggml_metal_init: found device: Apple M3
+ggml_metal_init: picking default device: Apple M3
+ggml_metal_init: use fusion         = true
+ggml_metal_init: use concurrency    = true
+ggml_metal_init: use graph optimize = true
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_q4_K_f32', name = 'kernel_mul_mv_q4_K_f32_nsg=2_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_q4_K_f32_nsg=2_ne12=1_r2=1_r3=1      0x1049bd470 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_q4_K_f32_r1_4', name = 'kernel_mul_mv_ext_q4_K_f32_r1_4_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_q4_K_f32_r1_4_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1      0xbe2e48000 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_q4_K_f32_r1_5', name = 'kernel_mul_mv_ext_q4_K_f32_r1_5_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_q4_K_f32_r1_5_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1      0xbe2e48700 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mm_q4_K_f32', name = 'kernel_mul_mm_q4_K_f32_bci=0_bco=0_ne12=1_ne13=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mm_q4_K_f32_bci=0_bco=0_ne12=1_ne13=1_r2=1_r3=1      0xbe2e48a80 | th_max = 1024 | th_width =   32
+ggml_metal_free: deallocating
+"backend_name","op_name","op_params","test_mode","supported","error_message","backend_reg_name"
+"MTL0","MUL_MAT","type_a=q4_K,type_b=f32,m=4096,n=1,k=14336,bs=[1,1],nr=[1,1],per=[0,1,2,3],k_v=0,o=1,src_overlap=0","perf","1","",""
+"MTL0","MUL_MAT","type_a=q4_K,type_b=f32,m=4096,n=2,k=14336,bs=[1,1],nr=[1,1],per=[0,1,2,3],k_v=0,o=1,src_overlap=0","perf","1","",""
+"MTL0","MUL_MAT","type_a=q4_K,type_b=f32,m=4096,n=3,k=14336,bs=[1,1],nr=[1,1],per=[0,1,2,3],k_v=0,o=1,src_overlap=0","perf","1","",""
+"MTL0","MUL_MAT","type_a=q4_K,type_b=f32,m=4096,n=4,k=14336,bs=[1,1],nr=[1,1],per=[0,1,2,3],k_v=0,o=1,src_overlap=0","perf","1","",""
+"MTL0","MUL_MAT","type_a=q4_K,type_b=f32,m=4096,n=5,k=14336,bs=[1,1],nr=[1,1],per=[0,1,2,3],k_v=0,o=1,src_overlap=0","perf","1","",""
+"MTL0","MUL_MAT","type_a=q4_K,type_b=f32,m=4096,n=8,k=14336,bs=[1,1],nr=[1,1],per=[0,1,2,3],k_v=0,o=1,src_overlap=0","perf","1","",""
+"MTL0","MUL_MAT","type_a=q4_K,type_b=f32,m=4096,n=512,k=14336,bs=[1,1],nr=[1,1],per=[0,1,2,3],k_v=0,o=1,src_overlap=0","perf","1","",""

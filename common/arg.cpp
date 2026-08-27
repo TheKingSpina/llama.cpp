@@ -2894,6 +2894,19 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_FIT_PARAMS}).set_env("LLAMA_ARG_FIT_ESTIMATE"));
     add_opt(common_arg(
+        {"--apple-telemetry"}, "[on|off]",
+        string_format("print one local Apple/runtime telemetry snapshot (default: '%s')", params.apple_telemetry ? "on" : "off"),
+        [](common_params & params, const std::string & value) {
+            if (is_truthy(value)) {
+                params.apple_telemetry = true;
+            } else if (is_falsey(value)) {
+                params.apple_telemetry = false;
+            } else {
+                throw std::runtime_error(string_format("error: unknown value for --apple-telemetry: '%s'\n", value.c_str()));
+            }
+        }
+    ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_APPLE_TELEMETRY"));
+    add_opt(common_arg(
         { "-fitt", "--fit-target" }, "MiB0,MiB1,MiB2,...",
         string_format("target margin per device for --fit, comma-separated list of values, "
             "single value is broadcast across all devices, default: %zu", params.fit_params_target[0]/(1024*1024)),

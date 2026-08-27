@@ -2,7 +2,9 @@
 #include "gguf.h"
 
 #include "build-info.h"
+#include "apple-runtime.h"
 #include "common.h"
+#include "node-runtime.h"
 #include "fit.h"
 #include "log.h"
 #include "llama.h"
@@ -416,6 +418,31 @@ void common_params_print_info(const common_params & params, bool print_devices) 
         }
     }
     COM_TRC("%s\n", common_params_get_system_info(params).c_str());
+    if (params.apple_telemetry) {
+        const auto telemetry = apple_runtime::system_snapshot();
+        const auto capabilities = node_runtime::local_capabilities();
+        COM_INF("apple_telemetry: chip=%s apple_silicon=%s physical=%llu MiB free=%llu MiB active=%llu MiB wired=%llu MiB compressed=%llu MiB rss=%llu MiB peak_rss=%llu MiB\n",
+            telemetry.chip.c_str(), telemetry.apple_silicon ? "yes" : "no",
+            static_cast<unsigned long long>(telemetry.physical_memory / 1024 / 1024),
+            static_cast<unsigned long long>(telemetry.free_memory / 1024 / 1024),
+            static_cast<unsigned long long>(telemetry.active_memory / 1024 / 1024),
+            static_cast<unsigned long long>(telemetry.wired_memory / 1024 / 1024),
+            static_cast<unsigned long long>(telemetry.compressed_memory / 1024 / 1024),
+            static_cast<unsigned long long>(telemetry.process_resident_memory / 1024 / 1024),
+            static_cast<unsigned long long>(telemetry.process_peak_resident_memory / 1024 / 1024));
+        COM_INF("node_capabilities: %s\n", node_runtime::capabilities_json(capabilities).c_str());
+        const size_t device_count = ggml_backend_dev_count();
+        COM_INF("backend_devices: count=%zu\n", device_count);
+        for (size_t i = 0; i < device_count; ++i) {
+            auto * dev = ggml_backend_dev_get(i);
+            size_t free_memory = 0;
+            size_t total_memory = 0;
+            ggml_backend_dev_memory(dev, &free_memory, &total_memory);
+            COM_INF("backend_device[%zu]: name=%s description=%s free=%zu MiB total=%zu MiB\n",
+                i, ggml_backend_dev_name(dev), ggml_backend_dev_description(dev),
+                free_memory / 1024 / 1024, total_memory / 1024 / 1024);
+        }
+    }
 }
 
 std::string common_params_get_system_info(const common_params & params) {

@@ -54,6 +54,8 @@ endif()
 set(TARGET llama-common)
 
 add_library(${TARGET}
+    apple-runtime.cpp
+    apple-runtime.h
     arg.cpp
     arg.h
     base64.hpp
@@ -92,6 +94,8 @@ add_library(${TARGET}
     ngram-map.h
     ngram-mod.cpp
     ngram-mod.h
+    node-runtime.cpp
+    node-runtime.h
     peg-parser.cpp
     peg-parser.h
     preset.cpp
@@ -179,3 +183,15 @@ if (LLAMA_LLGUIDANCE)
 endif()
 
 target_link_libraries(${TARGET} PUBLIC llama Threads::Threads)
+
+add_executable(node-runtime-selftest node-runtime-selftest.cpp)
+target_link_libraries(node-runtime-selftest PRIVATE llama-common)
+target_compile_features(node-runtime-selftest PRIVATE cxx_std_17)
+
+add_executable(node-runtime-bench node-runtime-bench.cpp)
+target_link_libraries(node-runtime-bench PRIVATE llama-common)
+target_compile_features(node-runtime-bench PRIVATE cxx_std_17)
+
+add_executable(llama-node node-runtime-main.cpp)
+target_link_libraries(llama-node PRIVATE llama-common)
+target_compile_features(llama-node PRIVATE cxx_std_17)

@@ -1,0 +1,1 @@
+# power=Now drawing from 'AC Power'  -InternalBattery-0 (id=22347875)	89%; charging; 0:37 remaining present: true ; lowpowermode=1

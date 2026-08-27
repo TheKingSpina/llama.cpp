@@ -510,6 +510,7 @@ struct common_params {
     // llama-debug specific options
     std::string logits_output_dir = "data"; // directory for saving logits output files                     // NOLINT
     bool        save_logits       = false;  // whether to save logits to files                              // NOLINT
+    bool        apple_telemetry   = false;  // print one local Apple/runtime telemetry snapshot             // NOLINT
     std::vector<std::string> tensor_filter; // filter tensor names for debug output (regex)                 // NOLINT
 
     std::vector<std::string> in_files;   // all input files
