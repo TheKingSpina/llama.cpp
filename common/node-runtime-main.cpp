@@ -7,10 +7,13 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 constexpr uint16_t registration_type = 1;
 constexpr uint16_t acknowledgement_type = 2;
+constexpr uint16_t heartbeat_type = 4;
+constexpr unsigned max_nodes = 8;
 
 bool parse_port(const char * text, uint16_t & port) {
     unsigned value = 0;
@@ -24,8 +27,32 @@ bool parse_port(const char * text, uint16_t & port) {
 }
 
 void usage(const char * name) {
-    std::fprintf(stderr, "usage: %s [--bind ADDRESS] [--port PORT] [--once] [--monitor SECONDS]\n", name);
+    std::fprintf(stderr, "usage: %s [--bind ADDRESS] [--port PORT] [--once] [--monitor SECONDS] [--nodes COUNT]\n", name);
 }
+
+struct node_entry {
+    node_runtime::tcp_transport transport;
+    node_runtime::node_lifecycle lifecycle;
+    node_runtime::registration_message registration;
+    uint64_t heartbeats = 0;
+    bool active = false;
+};
+
+// Receive one registration frame and reply with the local acknowledgement.
+bool register_peer(node_runtime::tcp_transport & peer, node_entry & entry) {
+    node_runtime::framed_message request;
+    if (!node_runtime::receive_message(peer, request, registration_type, 5000)) {
+        return false;
+    }
+    entry.registration = node_runtime::local_registration();
+    const std::string reply = node_runtime::registration_json(entry.registration);
+    if (!node_runtime::send_message(peer, acknowledgement_type, reply.data(), reply.size())) {
+        return false;
+    }
+    entry.active = true;
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -33,6 +60,7 @@ int main(int argc, char ** argv) {
     std::string bind_address = "127.0.0.1";
     bool once = false;
     unsigned monitor_seconds = 0;
+    unsigned node_count = 1;
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
         if (argument == "--once") {
@@ -47,6 +75,17 @@ int main(int argc, char ** argv) {
                 return 2;
             }
             if (monitor_seconds == 0) {
+                usage(argv[0]);
+                return 2;
+            }
+        } else if (argument == "--nodes" && i + 1 < argc) {
+            try {
+                node_count = std::stoul(argv[++i]);
+            } catch (...) {
+                usage(argv[0]);
+                return 2;
+            }
+            if (node_count == 0 || node_count > max_nodes) {
                 usage(argv[0]);
                 return 2;
             }
@@ -66,56 +105,72 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "llama-node: failed to listen on %s\n", bind_address.c_str());
         return 1;
     }
-    std::printf("llama-node listening on %s:%u\n", bind_address.c_str(), listener.port());
+    std::printf("llama-node listening on %s:%u, nodes=%u\n", bind_address.c_str(), listener.port(), node_count);
     std::fflush(stdout);
 
-    node_runtime::node_lifecycle lifecycle;
-    node_runtime::tcp_transport peer = listener.accept(once ? 5000 : 30000);
-    if (!peer.valid()) {
-        lifecycle.request_shutdown();
-        lifecycle.mark_stopped();
+    std::vector<node_entry> nodes(node_count);
+    unsigned registered = 0;
+    for (unsigned i = 0; i < node_count; ++i) {
+        node_runtime::tcp_transport peer = listener.accept(once ? 5000 : 30000);
+        if (!peer.valid()) {
+            break;
+        }
+        if (register_peer(peer, nodes[i])) {
+            nodes[i].transport = std::move(peer);
+            ++registered;
+            std::printf("llama-node: node %u registered\n", i + 1);
+            std::fflush(stdout);
+        }
+    }
+    if (registered == 0) {
         return once ? 1 : 0;
     }
 
-    node_runtime::framed_message request;
-    if (!node_runtime::receive_message(peer, request, registration_type, 5000)) {
-        lifecycle.request_shutdown();
-        lifecycle.mark_stopped();
-        return 1;
-    }
-
-    node_runtime::registration_state registration = node_runtime::local_registration_state();
-    node_runtime::set_registered(registration, true);
-    const std::string reply = node_runtime::registration_json(registration.message);
-    if (!node_runtime::send_message(peer, acknowledgement_type, reply.data(), reply.size())) {
-        lifecycle.request_shutdown();
-        lifecycle.mark_stopped();
-        return 1;
-    }
-
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(monitor_seconds);
-    do {
-        node_runtime::framed_message heartbeat_frame;
-        if (!node_runtime::receive_message(peer, heartbeat_frame, 4, 5000) ||
-            heartbeat_frame.payload.size() != sizeof(node_runtime::heartbeat_message)) {
-            lifecycle.request_shutdown();
-            lifecycle.mark_stopped();
-            return 1;
+    while (std::chrono::steady_clock::now() < deadline) {
+        bool any_active = false;
+        for (node_entry & entry : nodes) {
+            if (!entry.active) {
+                continue;
+            }
+            any_active = true;
+            node_runtime::framed_message heartbeat_frame;
+            if (!node_runtime::receive_message(entry.transport, heartbeat_frame, heartbeat_type, 1000) ||
+                heartbeat_frame.payload.size() != sizeof(node_runtime::heartbeat_message)) {
+                entry.active = false;
+                entry.transport.close();
+                std::printf("llama-node: node disconnected or timed out\n");
+                continue;
+            }
+            node_runtime::heartbeat_message heartbeat{};
+            std::memcpy(&heartbeat, heartbeat_frame.payload.data(), sizeof(heartbeat));
+            entry.lifecycle.observe_heartbeat(heartbeat, 1);
+            if (!node_runtime::send_message(entry.transport, heartbeat_type, &heartbeat, sizeof(heartbeat))) {
+                entry.active = false;
+                entry.transport.close();
+                std::printf("llama-node: node send failed\n");
+                continue;
+            }
+            ++entry.heartbeats;
         }
-        node_runtime::heartbeat_message heartbeat{};
-        std::memcpy(&heartbeat, heartbeat_frame.payload.data(), sizeof(heartbeat));
-        lifecycle.observe_heartbeat(heartbeat, 1);
-        if (!node_runtime::send_message(peer, 4, &heartbeat, sizeof(heartbeat))) {
-            lifecycle.request_shutdown();
-            lifecycle.mark_stopped();
-            return 1;
+        if (!any_active) {
+            break;
         }
-    } while (monitor_seconds != 0 && std::chrono::steady_clock::now() < deadline);
-    if (monitor_seconds != 0) {
-        std::printf("llama-node heartbeat monitor completed\n");
     }
-    lifecycle.request_shutdown();
-    lifecycle.mark_stopped();
-    std::printf("llama-node registration acknowledged; stopped\n");
+    for (const node_entry & entry : nodes) {
+        if (entry.active) {
+            std::printf("node %s: registered, %llu heartbeats, ok\n",
+                        entry.registration.capabilities.node_id.c_str(),
+                        static_cast<unsigned long long>(entry.heartbeats));
+        }
+    }
+    for (node_entry & entry : nodes) {
+        if (entry.active) {
+            entry.lifecycle.request_shutdown();
+            entry.lifecycle.mark_stopped();
+            entry.transport.close();
+        }
+    }
+    std::printf("llama-node heartbeat monitor completed\n");
     return 0;
 }
