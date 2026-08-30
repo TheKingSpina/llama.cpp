@@ -1,6 +1,7 @@
 #include "node-runtime.h"
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 namespace {
@@ -47,5 +48,17 @@ int main(int argc, char ** argv) {
     }
     std::printf("registration_ack=%.*s\n", static_cast<int>(acknowledgement.payload.size()),
                 acknowledgement.payload.data());
+    const node_runtime::heartbeat_message heartbeat{1, 1, 1};
+    if (!node_runtime::send_message(client, 4, &heartbeat, sizeof(heartbeat))) {
+        std::fprintf(stderr, "node-runtime-client: heartbeat send failed\n");
+        return 1;
+    }
+    node_runtime::framed_message heartbeat_ack;
+    if (!node_runtime::receive_message(client, heartbeat_ack, 4, 5000) ||
+        heartbeat_ack.payload.size() != sizeof(heartbeat)) {
+        std::fprintf(stderr, "node-runtime-client: heartbeat acknowledgement failed\n");
+        return 1;
+    }
+    std::printf("heartbeat_ack=ok\n");
     return 0;
 }

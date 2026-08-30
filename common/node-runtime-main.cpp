@@ -3,6 +3,7 @@
 #include <charconv>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 namespace {
@@ -78,7 +79,21 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    lifecycle.observe_heartbeat(lifecycle.heartbeat(1), 1);
+    node_runtime::framed_message heartbeat_frame;
+    if (!node_runtime::receive_message(peer, heartbeat_frame, 4, 5000) ||
+        heartbeat_frame.payload.size() != sizeof(node_runtime::heartbeat_message)) {
+        lifecycle.request_shutdown();
+        lifecycle.mark_stopped();
+        return 1;
+    }
+    node_runtime::heartbeat_message heartbeat{};
+    std::memcpy(&heartbeat, heartbeat_frame.payload.data(), sizeof(heartbeat));
+    lifecycle.observe_heartbeat(heartbeat, 1);
+    if (!node_runtime::send_message(peer, 4, &heartbeat, sizeof(heartbeat))) {
+        lifecycle.request_shutdown();
+        lifecycle.mark_stopped();
+        return 1;
+    }
     lifecycle.request_shutdown();
     lifecycle.mark_stopped();
     std::printf("llama-node registration acknowledged; stopped\n");
