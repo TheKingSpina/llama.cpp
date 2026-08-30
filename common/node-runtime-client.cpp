@@ -85,6 +85,7 @@ int main(int argc, char ** argv) {
         if (monitor_seconds == 0 || std::chrono::steady_clock::now() >= deadline) {
             break;
         }
+        // One heartbeat per second keeps the link warm without flooding.
         std::this_thread::sleep_for(std::chrono::seconds(1));
     } while (true);
     return 0;

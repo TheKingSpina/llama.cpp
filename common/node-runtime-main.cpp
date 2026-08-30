@@ -135,23 +135,24 @@ int main(int argc, char ** argv) {
             }
             any_active = true;
             node_runtime::framed_message heartbeat_frame;
-            if (!node_runtime::receive_message(entry.transport, heartbeat_frame, heartbeat_type, 1000) ||
-                heartbeat_frame.payload.size() != sizeof(node_runtime::heartbeat_message)) {
+            // A receive timeout is not a disconnect; the lifecycle timeout decides.
+            if (node_runtime::receive_message(entry.transport, heartbeat_frame, heartbeat_type, 1000) &&
+                heartbeat_frame.payload.size() == sizeof(node_runtime::heartbeat_message)) {
+                node_runtime::heartbeat_message heartbeat{};
+                std::memcpy(&heartbeat, heartbeat_frame.payload.data(), sizeof(heartbeat));
+                entry.lifecycle.observe_heartbeat(heartbeat, 1);
+                if (!node_runtime::send_message(entry.transport, heartbeat_type, &heartbeat, sizeof(heartbeat))) {
+                    entry.active = false;
+                    entry.transport.close();
+                    std::printf("llama-node: node send failed\n");
+                    continue;
+                }
+                ++entry.heartbeats;
+            } else if (entry.lifecycle.timed_out(1)) {
                 entry.active = false;
                 entry.transport.close();
-                std::printf("llama-node: node disconnected or timed out\n");
-                continue;
+                std::printf("llama-node: node timed out\n");
             }
-            node_runtime::heartbeat_message heartbeat{};
-            std::memcpy(&heartbeat, heartbeat_frame.payload.data(), sizeof(heartbeat));
-            entry.lifecycle.observe_heartbeat(heartbeat, 1);
-            if (!node_runtime::send_message(entry.transport, heartbeat_type, &heartbeat, sizeof(heartbeat))) {
-                entry.active = false;
-                entry.transport.close();
-                std::printf("llama-node: node send failed\n");
-                continue;
-            }
-            ++entry.heartbeats;
         }
         if (!any_active) {
             break;
