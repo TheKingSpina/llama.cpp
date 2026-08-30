@@ -271,7 +271,7 @@ tcp_transport & tcp_transport::operator=(tcp_transport && other) noexcept {
     return *this;
 }
 
-bool tcp_transport::listen(uint16_t port) {
+bool tcp_transport::listen(uint16_t port, const std::string & bind_address) {
     close();
     const int socket = ::socket(AF_INET, SOCK_STREAM, 0);
     if (socket < 0) {
@@ -279,7 +279,12 @@ bool tcp_transport::listen(uint16_t port) {
     }
     sockaddr_in address{};
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind_address == "localhost") {
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    } else if (::inet_pton(AF_INET, bind_address.c_str(), &address.sin_addr) != 1) {
+        close_socket(socket);
+        return false;
+    }
     address.sin_port = htons(port);
     if (::bind(socket, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 ||
         ::listen(socket, 1) != 0) {

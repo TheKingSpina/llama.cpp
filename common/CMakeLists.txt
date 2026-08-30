@@ -195,3 +195,7 @@ target_compile_features(node-runtime-bench PRIVATE cxx_std_17)
 add_executable(llama-node node-runtime-main.cpp)
 target_link_libraries(llama-node PRIVATE llama-common)
 target_compile_features(llama-node PRIVATE cxx_std_17)
+
+add_executable(node-runtime-client node-runtime-client.cpp)
+target_link_libraries(node-runtime-client PRIVATE llama-common)
+target_compile_features(node-runtime-client PRIVATE cxx_std_17)

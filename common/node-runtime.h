@@ -147,7 +147,7 @@ public:
     tcp_transport(tcp_transport && other) noexcept;
     tcp_transport & operator=(tcp_transport && other) noexcept;
 
-    bool listen(uint16_t port = 0);
+    bool listen(uint16_t port = 0, const std::string & bind_address = "127.0.0.1");
     tcp_transport accept(int timeout_ms = -1) const;
     bool connect(const std::string & host, uint16_t port);
     bool send(const void * data, size_t size) const;

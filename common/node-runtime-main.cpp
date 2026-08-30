@@ -21,17 +21,20 @@ bool parse_port(const char * text, uint16_t & port) {
 }
 
 void usage(const char * name) {
-    std::fprintf(stderr, "usage: %s [--port PORT] [--once]\n", name);
+    std::fprintf(stderr, "usage: %s [--bind ADDRESS] [--port PORT] [--once]\n", name);
 }
 } // namespace
 
 int main(int argc, char ** argv) {
     uint16_t port = 0;
+    std::string bind_address = "127.0.0.1";
     bool once = false;
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
         if (argument == "--once") {
             once = true;
+        } else if (argument == "--bind" && i + 1 < argc) {
+            bind_address = argv[++i];
         } else if (argument == "--port" && i + 1 < argc && parse_port(argv[++i], port)) {
             continue;
         } else if (argument == "--help" || argument == "-h") {
@@ -44,11 +47,11 @@ int main(int argc, char ** argv) {
     }
 
     node_runtime::tcp_transport listener;
-    if (!listener.listen(port)) {
-        std::fprintf(stderr, "llama-node: failed to listen on loopback\n");
+    if (!listener.listen(port, bind_address)) {
+        std::fprintf(stderr, "llama-node: failed to listen on %s\n", bind_address.c_str());
         return 1;
     }
-    std::printf("llama-node listening on 127.0.0.1:%u\n", listener.port());
+    std::printf("llama-node listening on %s:%u\n", bind_address.c_str(), listener.port());
     std::fflush(stdout);
 
     node_runtime::node_lifecycle lifecycle;
