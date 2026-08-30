@@ -1,10 +1,12 @@
 #include "node-runtime.h"
 
 #include <charconv>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 
 namespace {
 constexpr uint16_t registration_type = 1;
@@ -22,7 +24,7 @@ bool parse_port(const char * text, uint16_t & port) {
 }
 
 void usage(const char * name) {
-    std::fprintf(stderr, "usage: %s [--bind ADDRESS] [--port PORT] [--once]\n", name);
+    std::fprintf(stderr, "usage: %s [--bind ADDRESS] [--port PORT] [--once] [--monitor SECONDS]\n", name);
 }
 } // namespace
 
@@ -30,12 +32,24 @@ int main(int argc, char ** argv) {
     uint16_t port = 0;
     std::string bind_address = "127.0.0.1";
     bool once = false;
+    unsigned monitor_seconds = 0;
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
         if (argument == "--once") {
             once = true;
         } else if (argument == "--bind" && i + 1 < argc) {
             bind_address = argv[++i];
+        } else if (argument == "--monitor" && i + 1 < argc) {
+            try {
+                monitor_seconds = std::stoul(argv[++i]);
+            } catch (...) {
+                usage(argv[0]);
+                return 2;
+            }
+            if (monitor_seconds == 0) {
+                usage(argv[0]);
+                return 2;
+            }
         } else if (argument == "--port" && i + 1 < argc && parse_port(argv[++i], port)) {
             continue;
         } else if (argument == "--help" || argument == "-h") {
@@ -79,20 +93,26 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    node_runtime::framed_message heartbeat_frame;
-    if (!node_runtime::receive_message(peer, heartbeat_frame, 4, 5000) ||
-        heartbeat_frame.payload.size() != sizeof(node_runtime::heartbeat_message)) {
-        lifecycle.request_shutdown();
-        lifecycle.mark_stopped();
-        return 1;
-    }
-    node_runtime::heartbeat_message heartbeat{};
-    std::memcpy(&heartbeat, heartbeat_frame.payload.data(), sizeof(heartbeat));
-    lifecycle.observe_heartbeat(heartbeat, 1);
-    if (!node_runtime::send_message(peer, 4, &heartbeat, sizeof(heartbeat))) {
-        lifecycle.request_shutdown();
-        lifecycle.mark_stopped();
-        return 1;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(monitor_seconds);
+    do {
+        node_runtime::framed_message heartbeat_frame;
+        if (!node_runtime::receive_message(peer, heartbeat_frame, 4, 5000) ||
+            heartbeat_frame.payload.size() != sizeof(node_runtime::heartbeat_message)) {
+            lifecycle.request_shutdown();
+            lifecycle.mark_stopped();
+            return 1;
+        }
+        node_runtime::heartbeat_message heartbeat{};
+        std::memcpy(&heartbeat, heartbeat_frame.payload.data(), sizeof(heartbeat));
+        lifecycle.observe_heartbeat(heartbeat, 1);
+        if (!node_runtime::send_message(peer, 4, &heartbeat, sizeof(heartbeat))) {
+            lifecycle.request_shutdown();
+            lifecycle.mark_stopped();
+            return 1;
+        }
+    } while (monitor_seconds != 0 && std::chrono::steady_clock::now() < deadline);
+    if (monitor_seconds != 0) {
+        std::printf("llama-node heartbeat monitor completed\n");
     }
     lifecycle.request_shutdown();
     lifecycle.mark_stopped();
