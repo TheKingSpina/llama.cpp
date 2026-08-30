@@ -8,12 +8,12 @@
 
 namespace {
 void usage(const char * name) {
-    std::fprintf(stderr, "usage: %s HOST PORT [--monitor SECONDS]\n", name);
+    std::fprintf(stderr, "usage: %s HOST PORT [--monitor SECONDS] [--interval SECONDS]\n", name);
 }
 }
 
 int main(int argc, char ** argv) {
-    if (argc != 3 && argc != 5) {
+    if (argc < 3 || argc > 7 || (argc % 2) != 1) {
         usage(argv[0]);
         return 2;
     }
@@ -30,21 +30,26 @@ int main(int argc, char ** argv) {
         return 2;
     }
     unsigned monitor_seconds = 0;
-    if (argc == 5) {
-        if (std::string(argv[3]) != "--monitor") {
-            usage(argv[0]);
-            return 2;
-        }
+    unsigned interval_seconds = 1;
+    for (int i = 3; i < argc; i += 2) {
+        const std::string option = argv[i];
         try {
-            monitor_seconds = std::stoul(argv[4]);
+            if (option == "--monitor") {
+                monitor_seconds = std::stoul(argv[i + 1]);
+            } else if (option == "--interval") {
+                interval_seconds = std::stoul(argv[i + 1]);
+            } else {
+                usage(argv[0]);
+                return 2;
+            }
         } catch (...) {
             usage(argv[0]);
             return 2;
         }
-        if (monitor_seconds == 0) {
-            usage(argv[0]);
-            return 2;
-        }
+    }
+    if (monitor_seconds == 0 || interval_seconds == 0) {
+        usage(argv[0]);
+        return 2;
     }
 
     node_runtime::tcp_transport client;
@@ -78,6 +83,12 @@ int main(int argc, char ** argv) {
         node_runtime::framed_message heartbeat_ack;
         if (!node_runtime::receive_message(client, heartbeat_ack, 4, 5000) ||
             heartbeat_ack.payload.size() != sizeof(heartbeat)) {
+            // The coordinator closes the link when its monitor window ends;
+            // treat a closed link after a completed session as a clean stop.
+            if (monitor_seconds != 0 && std::chrono::steady_clock::now() >= deadline) {
+                std::printf("heartbeat monitor completed\n");
+                return 0;
+            }
             std::fprintf(stderr, "node-runtime-client: heartbeat acknowledgement failed\n");
             return 1;
         }
@@ -85,8 +96,8 @@ int main(int argc, char ** argv) {
         if (monitor_seconds == 0 || std::chrono::steady_clock::now() >= deadline) {
             break;
         }
-        // One heartbeat per second keeps the link warm without flooding.
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        // One heartbeat per interval keeps the link warm without flooding.
+        std::this_thread::sleep_for(std::chrono::seconds(interval_seconds));
     } while (true);
     return 0;
 }

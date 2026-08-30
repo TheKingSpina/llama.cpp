@@ -38,15 +38,16 @@ struct node_entry {
     bool active = false;
 };
 
-// Receive one registration frame and reply with the local acknowledgement.
+// Receive one registration frame and reply by echoing it back, so the
+// acknowledgement reflects the registering node, not the coordinator.
 bool register_peer(node_runtime::tcp_transport & peer, node_entry & entry) {
     node_runtime::framed_message request;
     if (!node_runtime::receive_message(peer, request, registration_type, 5000)) {
         return false;
     }
     entry.registration = node_runtime::local_registration();
-    const std::string reply = node_runtime::registration_json(entry.registration);
-    if (!node_runtime::send_message(peer, acknowledgement_type, reply.data(), reply.size())) {
+    if (!node_runtime::send_message(peer, acknowledgement_type,
+                                    request.payload.data(), request.payload.size())) {
         return false;
     }
     entry.active = true;
@@ -165,6 +166,26 @@ int main(int argc, char ** argv) {
                         static_cast<unsigned long long>(entry.heartbeats));
         }
     }
+    // Machine-readable summary for the next distributed phase.
+    std::printf("node_summary=[");
+    bool first = true;
+    for (const node_entry & entry : nodes) {
+        if (!entry.active) {
+            continue;
+        }
+        if (!first) {
+            std::printf(",");
+        }
+        first = false;
+        const node_runtime::capabilities & cap = entry.registration.capabilities;
+        std::printf("{\"node_id\":\"%s\",\"chip\":\"%s\",\"physical_memory\":%llu,"
+                    "\"logical_cpu_count\":%u,\"heartbeats\":%llu}",
+                    cap.node_id.c_str(), cap.chip.c_str(),
+                    static_cast<unsigned long long>(cap.physical_memory),
+                    cap.logical_cpu_count,
+                    static_cast<unsigned long long>(entry.heartbeats));
+    }
+    std::printf("]\n");
     for (node_entry & entry : nodes) {
         if (entry.active) {
             entry.lifecycle.request_shutdown();
