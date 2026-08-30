@@ -322,16 +322,18 @@ tcp_transport tcp_transport::accept(int timeout_ms) const {
 
 bool tcp_transport::connect(const std::string & host, uint16_t port) {
     close();
-    if (host != "localhost" && host != "127.0.0.1") {
-        return false;
-    }
     const int socket = ::socket(AF_INET, SOCK_STREAM, 0);
     if (socket < 0) {
         return false;
     }
     sockaddr_in address{};
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (host == "localhost") {
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    } else if (::inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1) {
+        close_socket(socket);
+        return false;
+    }
     address.sin_port = htons(port);
     if (::connect(socket, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0) {
         close_socket(socket);
