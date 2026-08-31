@@ -135,6 +135,9 @@ void set_registered(registration_state & state, bool registered);
 // Return a compact JSON registration message.
 std::string registration_json(const registration_message & value);
 
+// Parse a JSON registration message. Returns false on malformed input.
+bool registration_from_json(const std::string & text, registration_message & out);
+
 // Synchronous bounded TCP transport for local experiments. It binds only to
 // loopback and does not create threads or own an event loop.
 class tcp_transport {

@@ -198,6 +198,70 @@ std::string registration_json(const registration_message & value) {
     return result.str();
 }
 
+bool registration_from_json(const std::string & text, registration_message & out) {
+    // Minimal bounded parser for the fixed registration layout produced by
+    // registration_json. No external JSON dependency is introduced.
+    const std::string chip_key = "\"chip\":\"";
+    const std::string node_key = "\"node_id\":\"";
+    const std::string host_key = "\"hostname\":\"";
+    const std::string mem_key = "\"physical_memory\":";
+    const std::string cpu_key = "\"logical_cpu_count\":";
+    const std::string apple_key = "\"apple_silicon\":";
+    const std::string unified_key = "\"unified_memory\":";
+    auto find_string = [&](const std::string & key, std::string & value) {
+        const size_t pos = text.find(key);
+        if (pos == std::string::npos) {
+            return false;
+        }
+        const size_t start = pos + key.size();
+        const size_t end = text.find('"', start);
+        if (end == std::string::npos) {
+            return false;
+        }
+        value = text.substr(start, end - start);
+        return true;
+    };
+    auto find_number = [&](const std::string & key, unsigned long long & value) {
+        const size_t pos = text.find(key);
+        if (pos == std::string::npos) {
+            return false;
+        }
+        const size_t start = pos + key.size();
+        size_t end = start;
+        while (end < text.size() && text[end] >= '0' && text[end] <= '9') {
+            ++end;
+        }
+        if (end == start) {
+            return false;
+        }
+        value = std::strtoull(text.substr(start, end - start).c_str(), nullptr, 10);
+        return true;
+    };
+    auto find_bool = [&](const std::string & key, bool & value) {
+        const size_t pos = text.find(key);
+        if (pos == std::string::npos) {
+            return false;
+        }
+        value = text.compare(pos + key.size(), 4, "true") == 0;
+        return true;
+    };
+    out = {};
+    unsigned long long memory = 0;
+    unsigned long long cpus = 0;
+    if (!find_string(node_key, out.capabilities.node_id) ||
+        !find_string(host_key, out.capabilities.hostname) ||
+        !find_string(chip_key, out.capabilities.chip) ||
+        !find_number(mem_key, memory) ||
+        !find_number(cpu_key, cpus) ||
+        !find_bool(apple_key, out.capabilities.apple_silicon) ||
+        !find_bool(unified_key, out.capabilities.unified_memory)) {
+        return false;
+    }
+    out.capabilities.physical_memory = memory;
+    out.capabilities.logical_cpu_count = static_cast<uint32_t>(cpus);
+    return true;
+}
+
 node_lifecycle::node_lifecycle(lifecycle_config config) : config_(config) {}
 
 heartbeat_message node_lifecycle::heartbeat(uint64_t now_ms) {

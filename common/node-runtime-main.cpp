@@ -45,7 +45,10 @@ bool register_peer(node_runtime::tcp_transport & peer, node_entry & entry) {
     if (!node_runtime::receive_message(peer, request, registration_type, 5000)) {
         return false;
     }
-    entry.registration = node_runtime::local_registration();
+    const std::string text(request.payload.begin(), request.payload.end());
+    if (!node_runtime::registration_from_json(text, entry.registration)) {
+        return false;
+    }
     if (!node_runtime::send_message(peer, acknowledgement_type,
                                     request.payload.data(), request.payload.size())) {
         return false;
