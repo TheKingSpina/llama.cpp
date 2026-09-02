@@ -222,6 +222,48 @@ int main() {
     if (!check(registry_json.find("\"node_id\":\"node-a\"") != std::string::npos) ||
         !check(registry_json.find("\"reconnections\":1") != std::string::npos)) return 1;
 
+    // Wire-level reconnection: a second connection registering the same
+    // node_id must reuse the registry entry and bump reconnections again,
+    // mirroring what the coordinator does with a live reconnecting client.
+    {
+        node_runtime::tcp_transport reconnect_listener;
+        if (!check(reconnect_listener.listen())) return 1;
+        node_runtime::tcp_transport first_client;
+        if (!check(first_client.connect("127.0.0.1", reconnect_listener.port()))) return 1;
+        node_runtime::tcp_transport first_server = reconnect_listener.accept();
+        if (!check(first_server.valid())) return 1;
+        const std::string first_payload = node_runtime::registration_json(
+            node_runtime::registration_message{1, caps_a});
+        if (!check(node_runtime::send_message(first_client, 1, first_payload.data(), first_payload.size()))) return 1;
+        node_runtime::framed_message first_request;
+        if (!check(node_runtime::receive_message(first_server, first_request, 1, 1000))) return 1;
+
+        node_runtime::node_registry reconnect_registry(2);
+        if (!check(reconnect_registry.register_node(caps_a, 100))) return 1;
+        reconnect_registry.observe_heartbeat("node-a", 1, 110);
+
+        // The first link dies; the client reconnects with the same node_id.
+        first_client.close();
+        first_server.close();
+        node_runtime::tcp_transport second_client;
+        if (!check(second_client.connect("127.0.0.1", reconnect_listener.port()))) return 1;
+        node_runtime::tcp_transport second_server = reconnect_listener.accept();
+        if (!check(second_server.valid())) return 1;
+        if (!check(node_runtime::send_message(second_client, 1, first_payload.data(), first_payload.size()))) return 1;
+        node_runtime::framed_message second_request;
+        if (!check(node_runtime::receive_message(second_server, second_request, 1, 1000))) return 1;
+        node_runtime::registration_message second_registration;
+        const std::string second_text(second_request.payload.begin(), second_request.payload.end());
+        if (!check(node_runtime::registration_from_json(second_text, second_registration))) return 1;
+        if (!check(reconnect_registry.register_node(second_registration.capabilities, 130))) return 1;
+        if (!check(reconnect_registry.size() == 1) ||
+            !check(reconnect_registry.find("node-a")->reconnections == 1) ||
+            !check(reconnect_registry.find("node-a")->state == node_runtime::lifecycle_state::running)) return 1;
+        // Heartbeats resume on the new link.
+        reconnect_registry.observe_heartbeat("node-a", 2, 140);
+        if (!check(reconnect_registry.find("node-a")->heartbeats == 2)) return 1;
+    }
+
     // Heartbeats keep flowing for known nodes through the registry path.
     if (!check(node_runtime::send_message(client, 4, &heartbeat, sizeof(heartbeat)))) return 1;
     if (!check(node_runtime::receive_message(server, received_heartbeat, 4, 1000))) return 1;

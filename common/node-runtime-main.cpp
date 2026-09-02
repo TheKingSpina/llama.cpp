@@ -38,31 +38,67 @@ struct node_entry {
     std::string node_id;
 };
 
+node_entry * find_slot_by_node_id(std::vector<node_entry> & nodes, const std::string & node_id) {
+    for (node_entry & entry : nodes) {
+        if (entry.active && entry.node_id == node_id) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+node_entry * find_free_slot(std::vector<node_entry> & nodes) {
+    for (node_entry & entry : nodes) {
+        if (!entry.active) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
 // Receive one registration frame, record it in the persistent registry, and
 // reply by echoing it back, so the acknowledgement reflects the registering
-// node, not the coordinator.
-bool register_peer(node_runtime::tcp_transport & peer, node_entry & entry,
-                   node_runtime::node_registry & registry, uint64_t now_ms) {
+// node, not the coordinator. A registration with a known node_id reuses its
+// registry entry and takes over its slot; the superseded connection closes.
+node_entry * register_peer(node_runtime::tcp_transport && peer, std::vector<node_entry> & nodes,
+                           node_runtime::node_registry & registry, uint64_t now_ms) {
     node_runtime::framed_message request;
     if (!node_runtime::receive_message(peer, request, registration_type, 5000)) {
-        return false;
+        return nullptr;
     }
+    node_runtime::registration_message registration;
     const std::string text(request.payload.begin(), request.payload.end());
-    if (!node_runtime::registration_from_json(text, entry.registration)) {
-        return false;
+    if (!node_runtime::registration_from_json(text, registration)) {
+        return nullptr;
     }
-    if (!registry.register_node(entry.registration.capabilities, now_ms)) {
+    if (!registry.register_node(registration.capabilities, now_ms)) {
         std::printf("llama-node: registry full, rejecting node %s\n",
-                    entry.registration.capabilities.node_id.c_str());
-        return false;
+                    registration.capabilities.node_id.c_str());
+        return nullptr;
     }
-    entry.node_id = entry.registration.capabilities.node_id;
-    if (!node_runtime::send_message(peer, acknowledgement_type,
+    node_entry * slot = find_slot_by_node_id(nodes, registration.capabilities.node_id);
+    if (!slot) {
+        slot = find_free_slot(nodes);
+    }
+    if (!slot) {
+        std::printf("llama-node: no free slot, rejecting node %s\n",
+                    registration.capabilities.node_id.c_str());
+        return nullptr;
+    }
+    if (slot->active) {
+        slot->transport.close();
+    }
+    slot->transport = std::move(peer);
+    slot->registration = registration;
+    slot->node_id = registration.capabilities.node_id;
+    slot->active = true;
+    if (!node_runtime::send_message(slot->transport, acknowledgement_type,
                                     request.payload.data(), request.payload.size())) {
-        return false;
+        slot->active = false;
+        slot->transport.close();
+        return nullptr;
     }
-    entry.active = true;
-    return true;
+    return slot;
 }
 
 } // namespace
@@ -122,9 +158,18 @@ int main(int argc, char ** argv) {
 
     node_runtime::node_registry registry(node_count);
     std::vector<node_entry> nodes(node_count);
-    unsigned registered = 0;
     uint64_t clock_ms = 0;
-    for (unsigned i = 0; i < node_count; ++i) {
+    const auto count_active = [&nodes]() {
+        size_t count = 0;
+        for (const node_entry & entry : nodes) {
+            count += entry.active ? 1 : 0;
+        }
+        return count;
+    };
+    // Keep accepting until every slot has a live connection; a duplicate
+    // registration with a known node_id replaces its previous connection and
+    // reuses its slot, so the number of active slots still governs.
+    while (count_active() < node_count) {
         node_runtime::tcp_transport peer = listener.accept(once ? 5000 : 30000);
         if (!peer.valid()) {
             break;
@@ -132,15 +177,14 @@ int main(int argc, char ** argv) {
         // Registration order gives each node a distinct logical timestamp; the
         // coordinator has no wall clock dependency in this loop.
         ++clock_ms;
-        if (register_peer(peer, nodes[i], registry, clock_ms)) {
-            nodes[i].transport = std::move(peer);
-            ++registered;
-            std::printf("llama-node: node %u registered (%s)\n", i + 1,
-                        nodes[i].node_id.c_str());
+        node_entry * slot = register_peer(std::move(peer), nodes, registry, clock_ms);
+        if (slot) {
+            std::printf("llama-node: node %s registered on slot %ld\n",
+                        slot->node_id.c_str(), static_cast<long>(slot - nodes.data()));
             std::fflush(stdout);
         }
     }
-    if (registered == 0) {
+    if (count_active() == 0) {
         return once ? 1 : 0;
     }
 
@@ -174,8 +218,18 @@ int main(int argc, char ** argv) {
                 std::printf("llama-node: node timed out (kept in registry)\n");
             }
         }
-        if (!any_active) {
-            break;
+        // Accept reconnections. When no link is live, wait up to 1s here so
+        // the coordinator parks on accept instead of spinning until deadline.
+        node_runtime::tcp_transport peer = listener.accept(any_active ? 0 : 1000);
+        while (peer.valid()) {
+            ++clock_ms;
+            node_entry * slot = register_peer(std::move(peer), nodes, registry, clock_ms);
+            if (slot) {
+                std::printf("llama-node: node %s reconnected (slot %ld)\n",
+                            slot->node_id.c_str(), static_cast<long>(slot - nodes.data()));
+                std::fflush(stdout);
+            }
+            peer = listener.accept(0);
         }
     }
     const std::vector<node_runtime::node_registry_entry> entries = registry.entries();
