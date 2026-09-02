@@ -118,6 +118,50 @@ private:
     uint64_t heartbeat_sequence_ = 0;
 };
 
+// Persistent coordinator-side registry. Entries survive disconnects: a node
+// that reconnects with the same node_id reuses its entry, and timed-out nodes
+// are marked stale instead of being removed. No threads or timers are used;
+// the coordinator drives updates with caller-supplied timestamps.
+struct node_registry_entry {
+    capabilities capabilities;
+    lifecycle_state state = lifecycle_state::running;
+    uint64_t last_heartbeat_ms = 0;
+    uint64_t heartbeat_sequence = 0;
+    uint64_t heartbeats = 0;
+    uint64_t registered_at_ms = 0;
+    uint64_t reconnections = 0;
+};
+
+class node_registry {
+public:
+    explicit node_registry(size_t max_nodes = 8);
+
+    // Register or re-register a node. Returns false when the registry is full
+    // and the node_id is not already known.
+    bool register_node(const capabilities & capabilities, uint64_t now_ms);
+    // Record a received heartbeat for a known node.
+    void observe_heartbeat(const std::string & node_id, uint64_t sequence, uint64_t now_ms);
+    // Mark nodes past the heartbeat timeout as timed_out. Returns how many
+    // entries transitioned on this call.
+    size_t expire_stale(uint64_t now_ms, uint64_t timeout_ms);
+    // Find an entry by node id; nullptr when unknown.
+    node_registry_entry * find(const std::string & node_id);
+    const node_registry_entry * find(const std::string & node_id) const;
+
+    std::vector<node_registry_entry> entries() const;
+    size_t size() const;
+    size_t capacity() const;
+    // Count entries in the given lifecycle state.
+    size_t count_state(lifecycle_state state) const;
+
+private:
+    size_t max_nodes_;
+    std::vector<node_registry_entry> entries_;
+};
+
+// Compact JSON array report for diagnostics and the next distributed phase.
+std::string node_registry_json(const node_registry & registry);
+
 // Collect one bounded local snapshot. This does not start background work.
 capabilities local_capabilities();
 

@@ -315,6 +315,114 @@ lifecycle_state node_lifecycle::state() const { return state_; }
 uint64_t node_lifecycle::last_heartbeat_ms() const { return last_heartbeat_ms_; }
 uint64_t node_lifecycle::heartbeat_sequence() const { return heartbeat_sequence_; }
 
+node_registry::node_registry(size_t max_nodes) : max_nodes_(max_nodes) {}
+
+bool node_registry::register_node(const capabilities & capabilities, uint64_t now_ms) {
+    node_registry_entry * existing = find(capabilities.node_id);
+    if (existing != nullptr) {
+        existing->capabilities = capabilities;
+        existing->state = lifecycle_state::running;
+        existing->last_heartbeat_ms = now_ms;
+        existing->registered_at_ms = now_ms;
+        ++existing->reconnections;
+        return true;
+    }
+    if (entries_.size() >= max_nodes_) {
+        return false;
+    }
+    node_registry_entry entry;
+    entry.capabilities = capabilities;
+    entry.state = lifecycle_state::running;
+    entry.last_heartbeat_ms = now_ms;
+    entry.registered_at_ms = now_ms;
+    entries_.push_back(entry);
+    return true;
+}
+
+void node_registry::observe_heartbeat(const std::string & node_id, uint64_t sequence,
+                                      uint64_t now_ms) {
+    node_registry_entry * entry = find(node_id);
+    if (entry == nullptr || sequence == 0) {
+        return;
+    }
+    entry->last_heartbeat_ms = now_ms;
+    entry->heartbeat_sequence = sequence;
+    ++entry->heartbeats;
+    if (entry->state == lifecycle_state::timed_out) {
+        entry->state = lifecycle_state::running;
+    }
+}
+
+size_t node_registry::expire_stale(uint64_t now_ms, uint64_t timeout_ms) {
+    size_t expired = 0;
+    for (node_registry_entry & entry : entries_) {
+        if (entry.state != lifecycle_state::running || entry.last_heartbeat_ms == 0) {
+            continue;
+        }
+        if (now_ms - entry.last_heartbeat_ms >= timeout_ms) {
+            entry.state = lifecycle_state::timed_out;
+            ++expired;
+        }
+    }
+    return expired;
+}
+
+node_registry_entry * node_registry::find(const std::string & node_id) {
+    for (node_registry_entry & entry : entries_) {
+        if (entry.capabilities.node_id == node_id) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+const node_registry_entry * node_registry::find(const std::string & node_id) const {
+    for (const node_registry_entry & entry : entries_) {
+        if (entry.capabilities.node_id == node_id) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+std::vector<node_registry_entry> node_registry::entries() const { return entries_; }
+
+size_t node_registry::size() const { return entries_.size(); }
+
+size_t node_registry::capacity() const { return max_nodes_; }
+
+size_t node_registry::count_state(lifecycle_state state) const {
+    size_t count = 0;
+    for (const node_registry_entry & entry : entries_) {
+        if (entry.state == state) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+std::string node_registry_json(const node_registry & registry) {
+    std::ostringstream result;
+    result << '[';
+    bool first = true;
+    for (const node_registry_entry & entry : registry.entries()) {
+        if (!first) {
+            result << ',';
+        }
+        first = false;
+        result << "{\"capabilities\":" << capabilities_json(entry.capabilities)
+               << ",\"state\":" << static_cast<int>(entry.state)
+               << ",\"last_heartbeat_ms\":" << entry.last_heartbeat_ms
+               << ",\"heartbeat_sequence\":" << entry.heartbeat_sequence
+               << ",\"heartbeats\":" << entry.heartbeats
+               << ",\"registered_at_ms\":" << entry.registered_at_ms
+               << ",\"reconnections\":" << entry.reconnections
+               << '}';
+    }
+    result << ']';
+    return result.str();
+}
+
 tcp_transport::tcp_transport(int socket, uint16_t port) : socket_(socket), port_(port) {}
 
 tcp_transport::~tcp_transport() { close(); }

@@ -32,15 +32,17 @@ void usage(const char * name) {
 
 struct node_entry {
     node_runtime::tcp_transport transport;
-    node_runtime::node_lifecycle lifecycle;
     node_runtime::registration_message registration;
-    uint64_t heartbeats = 0;
     bool active = false;
+    // Index into the coordinator registry for this connection.
+    std::string node_id;
 };
 
-// Receive one registration frame and reply by echoing it back, so the
-// acknowledgement reflects the registering node, not the coordinator.
-bool register_peer(node_runtime::tcp_transport & peer, node_entry & entry) {
+// Receive one registration frame, record it in the persistent registry, and
+// reply by echoing it back, so the acknowledgement reflects the registering
+// node, not the coordinator.
+bool register_peer(node_runtime::tcp_transport & peer, node_entry & entry,
+                   node_runtime::node_registry & registry, uint64_t now_ms) {
     node_runtime::framed_message request;
     if (!node_runtime::receive_message(peer, request, registration_type, 5000)) {
         return false;
@@ -49,6 +51,12 @@ bool register_peer(node_runtime::tcp_transport & peer, node_entry & entry) {
     if (!node_runtime::registration_from_json(text, entry.registration)) {
         return false;
     }
+    if (!registry.register_node(entry.registration.capabilities, now_ms)) {
+        std::printf("llama-node: registry full, rejecting node %s\n",
+                    entry.registration.capabilities.node_id.c_str());
+        return false;
+    }
+    entry.node_id = entry.registration.capabilities.node_id;
     if (!node_runtime::send_message(peer, acknowledgement_type,
                                     request.payload.data(), request.payload.size())) {
         return false;
@@ -112,17 +120,23 @@ int main(int argc, char ** argv) {
     std::printf("llama-node listening on %s:%u, nodes=%u\n", bind_address.c_str(), listener.port(), node_count);
     std::fflush(stdout);
 
+    node_runtime::node_registry registry(node_count);
     std::vector<node_entry> nodes(node_count);
     unsigned registered = 0;
+    uint64_t clock_ms = 0;
     for (unsigned i = 0; i < node_count; ++i) {
         node_runtime::tcp_transport peer = listener.accept(once ? 5000 : 30000);
         if (!peer.valid()) {
             break;
         }
-        if (register_peer(peer, nodes[i])) {
+        // Registration order gives each node a distinct logical timestamp; the
+        // coordinator has no wall clock dependency in this loop.
+        ++clock_ms;
+        if (register_peer(peer, nodes[i], registry, clock_ms)) {
             nodes[i].transport = std::move(peer);
             ++registered;
-            std::printf("llama-node: node %u registered\n", i + 1);
+            std::printf("llama-node: node %u registered (%s)\n", i + 1,
+                        nodes[i].node_id.c_str());
             std::fflush(stdout);
         }
     }
@@ -144,55 +158,37 @@ int main(int argc, char ** argv) {
                 heartbeat_frame.payload.size() == sizeof(node_runtime::heartbeat_message)) {
                 node_runtime::heartbeat_message heartbeat{};
                 std::memcpy(&heartbeat, heartbeat_frame.payload.data(), sizeof(heartbeat));
-                entry.lifecycle.observe_heartbeat(heartbeat, 1);
+                ++clock_ms;
+                registry.observe_heartbeat(entry.node_id, heartbeat.sequence, clock_ms);
                 if (!node_runtime::send_message(entry.transport, heartbeat_type, &heartbeat, sizeof(heartbeat))) {
                     entry.active = false;
                     entry.transport.close();
                     std::printf("llama-node: node send failed\n");
                     continue;
                 }
-                ++entry.heartbeats;
-            } else if (entry.lifecycle.timed_out(1)) {
+            } else if (registry.expire_stale(++clock_ms, 5) > 0) {
+                // Registry entries turn stale instead of being dropped; the
+                // connection is closed but the node stays registered.
                 entry.active = false;
                 entry.transport.close();
-                std::printf("llama-node: node timed out\n");
+                std::printf("llama-node: node timed out (kept in registry)\n");
             }
         }
         if (!any_active) {
             break;
         }
     }
-    for (const node_entry & entry : nodes) {
-        if (entry.active) {
-            std::printf("node %s: registered, %llu heartbeats, ok\n",
-                        entry.registration.capabilities.node_id.c_str(),
-                        static_cast<unsigned long long>(entry.heartbeats));
-        }
+    const std::vector<node_runtime::node_registry_entry> entries = registry.entries();
+    for (const node_runtime::node_registry_entry & item : entries) {
+        std::printf("node %s: state=%d, %llu heartbeats, reconnections=%llu\n",
+                    item.capabilities.node_id.c_str(), static_cast<int>(item.state),
+                    static_cast<unsigned long long>(item.heartbeats),
+                    static_cast<unsigned long long>(item.reconnections));
     }
     // Machine-readable summary for the next distributed phase.
-    std::printf("node_summary=[");
-    bool first = true;
-    for (const node_entry & entry : nodes) {
-        if (!entry.active) {
-            continue;
-        }
-        if (!first) {
-            std::printf(",");
-        }
-        first = false;
-        const node_runtime::capabilities & cap = entry.registration.capabilities;
-        std::printf("{\"node_id\":\"%s\",\"chip\":\"%s\",\"physical_memory\":%llu,"
-                    "\"logical_cpu_count\":%u,\"heartbeats\":%llu}",
-                    cap.node_id.c_str(), cap.chip.c_str(),
-                    static_cast<unsigned long long>(cap.physical_memory),
-                    cap.logical_cpu_count,
-                    static_cast<unsigned long long>(entry.heartbeats));
-    }
-    std::printf("]\n");
+    std::printf("node_registry=%s\n", node_runtime::node_registry_json(registry).c_str());
     for (node_entry & entry : nodes) {
         if (entry.active) {
-            entry.lifecycle.request_shutdown();
-            entry.lifecycle.mark_stopped();
             entry.transport.close();
         }
     }

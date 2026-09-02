@@ -182,5 +182,48 @@ int main() {
     if (!check(node_runtime::receive_message(server, received_payload, 5, 1000)) ||
         !check(received_payload.payload.size() == sizeof(payload)) ||
         !check(std::memcmp(payload, received_payload.payload.data(), sizeof(payload)) == 0)) return 1;
+
+    node_runtime::node_registry registry(2);
+    node_runtime::capabilities caps_a = worker_registration.capabilities;
+    caps_a.node_id = "node-a";
+    node_runtime::capabilities caps_b = worker_registration.capabilities;
+    caps_b.node_id = "node-b";
+    node_runtime::capabilities caps_c = worker_registration.capabilities;
+    caps_c.node_id = "node-c";
+    if (!check(registry.register_node(caps_a, 10)) || !check(registry.register_node(caps_b, 20)) ||
+        !check(!registry.register_node(caps_c, 30)) || !check(registry.size() == 2)) return 1;
+
+    registry.observe_heartbeat("node-a", 1, 15);
+    registry.observe_heartbeat("node-a", 2, 25);
+    registry.observe_heartbeat("node-b", 1, 20);
+    registry.observe_heartbeat("unknown", 1, 25);
+    registry.observe_heartbeat("node-a", 0, 25);
+    const node_runtime::node_registry_entry * found_a = registry.find("node-a");
+    if (!check(found_a != nullptr) || !check(found_a->heartbeats == 2) ||
+        !check(found_a->heartbeat_sequence == 2) || !check(found_a->last_heartbeat_ms == 25) ||
+        !check(found_a->state == node_runtime::lifecycle_state::running)) return 1;
+
+    if (!check(registry.expire_stale(60, 30) == 2) ||
+        !check(registry.count_state(node_runtime::lifecycle_state::timed_out) == 2) ||
+        !check(registry.find("node-a")->state == node_runtime::lifecycle_state::timed_out)) return 1;
+    // A heartbeat after expiry recovers the entry instead of re-registering.
+    registry.observe_heartbeat("node-b", 2, 70);
+    if (!check(registry.find("node-b")->state == node_runtime::lifecycle_state::running) ||
+        !check(registry.count_state(node_runtime::lifecycle_state::timed_out) == 1)) return 1;
+
+    // Re-registration with the same node_id reuses the entry.
+    if (!check(registry.register_node(caps_a, 80)) ||
+        !check(registry.size() == 2) ||
+        !check(registry.find("node-a")->state == node_runtime::lifecycle_state::running) ||
+        !check(registry.find("node-a")->reconnections == 1) ||
+        !check(registry.find("node-a")->registered_at_ms == 80)) return 1;
+
+    const std::string registry_json = node_runtime::node_registry_json(registry);
+    if (!check(registry_json.find("\"node_id\":\"node-a\"") != std::string::npos) ||
+        !check(registry_json.find("\"reconnections\":1") != std::string::npos)) return 1;
+
+    // Heartbeats keep flowing for known nodes through the registry path.
+    if (!check(node_runtime::send_message(client, 4, &heartbeat, sizeof(heartbeat)))) return 1;
+    if (!check(node_runtime::receive_message(server, received_heartbeat, 4, 1000))) return 1;
     return 0;
 }
