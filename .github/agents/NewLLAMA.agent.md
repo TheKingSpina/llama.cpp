@@ -343,9 +343,11 @@ Memory must NOT become a second Git repository.
 
 ---
 
-# 6. MCP MEMORY
+# 6. MCP MEMORY - PMB
 
-You have access to an MCP memory service.
+The memory service for this project is **PMB** (local-first memory for AI agents).
+
+Storage is persistent on disk under `~/.pmb/workspaces/` (SQLite + LanceDB). Memory survives reboots. The optional warm daemon (`pmb daemon status`, port 8765) is a latency optimization, not a requirement: if it is down, memory still works.
 
 Use it as a persistent engineering notebook.
 
@@ -355,15 +357,41 @@ Its primary purpose is:
 
 At the beginning of every session, read the relevant project memory before exploring the repository.
 
-## MEMORY SERVICE SPECIFICATION
+## PMB SPECIFICATION
 
-Before relying on MCP Memory, verify which memory service is actually connected and available in this session (e.g. the official Anthropic memory MCP server, a local SQLite-backed server, or another implementation).
+This workspace is attached to PMB. Its agent rules require, before the first substantive action of a session:
 
-If no MCP memory service is connected:
+```
+prepare(message="<the user's first or current message>")
+```
+
+That call returns project context, surfaced lessons, recent activity, and open goals. Read the returned lessons before acting; they override defaults. After acting on a lesson, confirm with `mark_lesson_followed`.
+
+Before introducing a tool, pattern, or command not yet used in the session, check for prior rulings:
+
+```
+find_lessons(query="<what you are about to do>")
+recall(query="<what you are about to do>")
+```
+
+Write to memory with `record_batch` (activities, lessons, goals) and `record_keyed_fact` (changing attributes). Include `"project":"llama.cpp"` in project-specific entries. Record one batch per turn on the defined triggers: completed work, project-shaping decisions, corrections, and future intents (goals, not facts).
+
+CLI equivalents for inspection and maintenance (not a substitute for the MCP tools during a session):
+
+```
+pmb recall "<query>"     # search memory
+pmb audit                # what PMB knows, read-only view
+pmb lessons              # durable lessons
+pmb goals                # open goals / next steps
+pmb dashboard            # local web UI of the memory graph
+pmb fact / note / learn  # manual captures from the terminal
+```
+
+If PMB is not reachable (no MCP tools and `pmb` CLI failing):
 
 - Say so explicitly rather than silently proceeding as if state will persist.
 - Fall back to a plain-text project-state file committed to the repository (e.g. `PROJECT_STATE.md`) as the persistence mechanism, and use that instead of assuming memory across sessions.
-- Note in that fallback file that it is a substitute for MCP Memory, so a future session does not miss it.
+- Note in that fallback file that it is a substitute for PMB, so a future session does not miss it.
 
 Do not assume memory persistence is available without confirming it.
 
@@ -475,7 +503,7 @@ Update Memory after discovering the discrepancy.
 
 At every new session:
 
-1. Read project-state Memory.
+1. Read project-state Memory (PMB: `prepare` at session start, plus `recall` as needed).
 2. Read relevant architectural decisions.
 3. Read unresolved issues.
 4. Read latest benchmark summary.
@@ -505,7 +533,7 @@ Before ending a meaningful session:
 4. Record important results.
 5. Update documentation.
 6. Commit coherent changes when appropriate.
-7. Update MCP Memory.
+7. Update PMB memory (`record_batch`: one completed activity per milestone, updated goals for next steps).
 
 The Memory update must answer:
 
@@ -1816,7 +1844,7 @@ DO NOT IMPLEMENT THE FINAL SYSTEM.
 
 First:
 
-1. Read MCP Memory.
+1. Read PMB memory (`prepare`, then `recall` for project state).
 2. Inspect Git.
 3. Determine exact llama.cpp version/commit.
 4. Map the repository.
@@ -1837,7 +1865,7 @@ First:
 19. Produce phased implementation plan.
 20. Produce benchmark plan.
 21. Identify the smallest useful first milestone.
-22. Update MCP Memory with the resulting state.
+22. Update PMB memory with the resulting state (`record_batch`).
 
 Only after this should implementation begin.
 
