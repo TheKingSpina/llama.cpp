@@ -7,7 +7,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstddef>
+#include <list>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace expert_catalog {
@@ -179,6 +181,68 @@ public:
 
 private:
     std::FILE * file_ = nullptr;
+};
+
+struct cache_stats {
+    uint64_t hits = 0;
+    uint64_t misses = 0;
+    uint64_t evictions = 0;
+    uint64_t bytes_loaded = 0;
+    uint64_t bytes_served = 0;
+    // Hits over hits plus misses; 0.0 when no request was made.
+    double hit_rate() const;
+};
+
+// Experimental LRU cache over expert slices. One reader is bound at
+// construction. serve() returns a pointer to the resident planes: valid
+// until the next serve, eviction, or clear. With zero capacity every
+// request is a miss and the planes live in an internal scratch buffer.
+// Synchronous, caller-driven, no threads, no prefetch, no inference
+// integration.
+class expert_cache {
+public:
+    expert_cache(expert_reader & reader, uint64_t max_bytes,
+                 size_t max_entries = 4096);
+
+    // Serve one expert. On hit, out points at the cached planes. On miss,
+    // the planes are read from the reader, cached, and evicted LRU as
+    // needed. Returns false on unknown layer or expert, invalid reader,
+    // or read failure. An expert larger than the whole capacity is served
+    // without being cached.
+    bool serve(const expert_catalog & catalog, uint32_t layer_index,
+               uint32_t expert_index, const loaded_expert *& out);
+
+    // Drop all resident entries. Statistics are cumulative and survive.
+    void clear();
+
+    size_t resident_entries() const;
+    uint64_t resident_bytes() const;
+    uint64_t capacity_bytes() const;
+    const cache_stats & stats() const;
+
+    // Compact JSON statistics report.
+    std::string stats_json() const;
+
+private:
+    struct cache_entry {
+        uint32_t layer_index = 0;
+        uint32_t expert_index = 0;
+        loaded_expert planes;
+        uint64_t bytes = 0;
+    };
+
+    bool insert_and_serve(const expert_catalog & catalog, uint32_t layer_index,
+                          uint32_t expert_index, const loaded_expert *& out);
+    void evict_until_fits(uint64_t incoming_bytes);
+
+    expert_reader & reader_;
+    uint64_t max_bytes_;
+    size_t max_entries_;
+    std::list<cache_entry> lru_;
+    std::unordered_map<uint64_t, std::list<cache_entry>::iterator> index_;
+    uint64_t resident_bytes_ = 0;
+    loaded_expert scratch_;
+    cache_stats stats_;
 };
 
 } // namespace expert_catalog

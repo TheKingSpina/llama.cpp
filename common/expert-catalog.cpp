@@ -521,7 +521,22 @@ bool read_at(std::FILE * file, uint64_t offset, uint64_t size,
     return std::fread(out.data(), 1, static_cast<size_t>(size), file) == size;
 }
 
+uint64_t slice_key(uint32_t layer_index, uint32_t expert_index) {
+    return (static_cast<uint64_t>(layer_index) << 32) | expert_index;
+}
+
+uint64_t slice_bytes_of(const loaded_expert & planes) {
+    return planes.gate_up.size() + planes.down.size() +
+           planes.gate.size() + planes.up.size();
+}
+
 } // namespace
+
+double cache_stats::hit_rate() const {
+    const uint64_t total = hits + misses;
+    return total == 0 ? 0.0 : static_cast<double>(hits) /
+                              static_cast<double>(total);
+}
 
 bool expert_reader::read_expert(const expert_catalog & catalog,
                                 uint32_t layer_index, uint32_t expert_index,
@@ -567,6 +582,100 @@ bool expert_reader::read_expert(const expert_catalog & catalog,
         }
     }
     return true;
+}
+
+expert_cache::expert_cache(expert_reader & reader, uint64_t max_bytes,
+                           size_t max_entries)
+    : reader_(reader), max_bytes_(max_bytes), max_entries_(max_entries) {}
+
+void expert_cache::evict_until_fits(uint64_t incoming_bytes) {
+    while (!lru_.empty() &&
+           (resident_bytes_ + incoming_bytes > max_bytes_ ||
+            index_.size() + 1 > max_entries_)) {
+        index_.erase(slice_key(lru_.back().layer_index, lru_.back().expert_index));
+        resident_bytes_ -= lru_.back().bytes;
+        lru_.pop_back();
+        ++stats_.evictions;
+    }
+}
+
+bool expert_cache::insert_and_serve(const expert_catalog & catalog,
+                                    uint32_t layer_index,
+                                    uint32_t expert_index,
+                                    const loaded_expert *& out) {
+    loaded_expert planes;
+    if (!reader_.read_expert(catalog, layer_index, expert_index, planes)) {
+        return false;
+    }
+    const uint64_t bytes = slice_bytes_of(planes);
+    if (bytes > max_bytes_ || index_.size() + 1 > max_entries_) {
+        // Too big to cache or the entry table is full: serve uncached.
+        scratch_ = std::move(planes);
+        out = &scratch_;
+        return true;
+    }
+    evict_until_fits(bytes);
+    cache_entry entry;
+    entry.layer_index = layer_index;
+    entry.expert_index = expert_index;
+    entry.bytes = bytes;
+    entry.planes = std::move(planes);
+    lru_.push_front(std::move(entry));
+    index_[slice_key(layer_index, expert_index)] = lru_.begin();
+    resident_bytes_ += bytes;
+    stats_.bytes_loaded += bytes;
+    out = &lru_.front().planes;
+    return true;
+}
+
+bool expert_cache::serve(const expert_catalog & catalog, uint32_t layer_index,
+                         uint32_t expert_index, const loaded_expert *& out) {
+    const auto found = index_.find(slice_key(layer_index, expert_index));
+    if (found != index_.end()) {
+        lru_.splice(lru_.begin(), lru_, found->second);
+        out = &found->second->planes;
+        ++stats_.hits;
+        stats_.bytes_served += found->second->bytes;
+        return true;
+    }
+    ++stats_.misses;
+    return insert_and_serve(catalog, layer_index, expert_index, out);
+}
+
+void expert_cache::clear() {
+    lru_.clear();
+    index_.clear();
+    resident_bytes_ = 0;
+}
+
+size_t expert_cache::resident_entries() const {
+    return index_.size();
+}
+
+uint64_t expert_cache::resident_bytes() const {
+    return resident_bytes_;
+}
+
+uint64_t expert_cache::capacity_bytes() const {
+    return max_bytes_;
+}
+
+const cache_stats & expert_cache::stats() const {
+    return stats_;
+}
+
+std::string expert_cache::stats_json() const {
+    std::ostringstream result;
+    result << "{\"hits\":" << stats_.hits
+           << ",\"misses\":" << stats_.misses
+           << ",\"evictions\":" << stats_.evictions
+           << ",\"hit_rate\":" << stats_.hit_rate()
+           << ",\"bytes_loaded\":" << stats_.bytes_loaded
+           << ",\"bytes_served\":" << stats_.bytes_served
+           << ",\"resident_entries\":" << index_.size()
+           << ",\"resident_bytes\":" << resident_bytes_
+           << ",\"capacity_bytes\":" << max_bytes_ << '}';
+    return result.str();
 }
 
 } // namespace expert_catalog
