@@ -32,7 +32,6 @@ void usage(const char * name) {
 
 struct node_entry {
     node_runtime::tcp_transport transport;
-    node_runtime::registration_message registration;
     bool active = false;
     // Index into the coordinator registry for this connection.
     std::string node_id;
@@ -89,7 +88,6 @@ node_entry * register_peer(node_runtime::tcp_transport && peer, std::vector<node
         slot->transport.close();
     }
     slot->transport = std::move(peer);
-    slot->registration = registration;
     slot->node_id = registration.capabilities.node_id;
     slot->active = true;
     if (!node_runtime::send_message(slot->transport, acknowledgement_type,
