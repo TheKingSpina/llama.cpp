@@ -5,7 +5,6 @@
 
 #include <cstdio>
 #include <cstring>
-#include <vector>
 #include <string>
 #include <vector>
 
@@ -21,8 +20,8 @@ struct tensor_spec {
     ggml_type type;
 };
 
-// Write a metadata-only GGUF file. The catalog reads metadata only, so the
-// tensor data blob is never needed.
+// Write a synthetic GGUF file with real tensor data so the reader tests
+// can verify byte-exact slice reads.
 bool write_synthetic_gguf(const std::string & path,
                           const std::string & architecture,
                           bool include_expert_count_kv,
