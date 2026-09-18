@@ -22,6 +22,8 @@ Nodes close their session with a graceful departure frame (type 6) carrying the 
 
 Transport framing now supports experimental chunked transfer for payloads larger than one frame: one metadata frame followed by ordered data frames with sequence, size, and total validation on receipt. The peer must drain the stream concurrently, because a single-threaded send-then-receive over one connection deadlocks once bytes in flight exceed the socket buffers. Sockets enable TCP_NODELAY so many small frames do not interact with Nagle and delayed ACK.
 
+The experimental MoE expert catalog is standalone in `common/expert-catalog.{h,cpp}`. It reads GGUF metadata only and lists MoE layers with per-expert slice sizes for the fused and separate expert tensor layouts. The experimental placement table maps individual experts to node ids with per-node byte totals. Both are caller-driven, perform no I/O beyond the initial metadata read, and have no inference integration.
+
 The experimental local scheduler is also standalone in `common/node-runtime`. It scores artificial tasks using compute work, memory feasibility, and network/storage penalties, then selects the lowest-cost candidate with deterministic candidate-ID tie breaking. It does not inspect or schedule ggml tensors and is disabled by default; the self-test covers only this artificial API.
 
 `common/node-runtime-selftest.cpp` provides an artificial loopback milestone. It registers the local capability message, opens a localhost-only TCP listener, connects and accepts synchronously, exchanges a heartbeat and a payload, and checks timeout plus shutdown transitions. It does not move tensors, use background threads, or access non-loopback hosts.

@@ -75,6 +75,8 @@ add_library(${TARGET}
     debug.h
     download.cpp
     download.h
+    expert-catalog.cpp
+    expert-catalog.h
     fit.cpp
     fit.h
     hf-cache.cpp
@@ -187,6 +189,10 @@ target_link_libraries(${TARGET} PUBLIC llama Threads::Threads)
 add_executable(node-runtime-selftest node-runtime-selftest.cpp)
 target_link_libraries(node-runtime-selftest PRIVATE llama-common)
 target_compile_features(node-runtime-selftest PRIVATE cxx_std_17)
+
+add_executable(expert-catalog-selftest expert-catalog-selftest.cpp)
+target_link_libraries(expert-catalog-selftest PRIVATE llama-common)
+target_compile_features(expert-catalog-selftest PRIVATE cxx_std_17)
 
 add_executable(node-runtime-bench node-runtime-bench.cpp)
 target_link_libraries(node-runtime-bench PRIVATE llama-common)
