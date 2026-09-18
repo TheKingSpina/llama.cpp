@@ -363,5 +363,39 @@ int main() {
             !check(budget.reservations()[1].label == "model") ||
             !check(budget.reservations()[1].created_at_ms == 12)) return 1;
     }
+    // Chunked transfer: single-frame and multi-chunk round trips.
+    {
+        std::vector<uint8_t> small{1, 2, 3};
+        std::vector<uint8_t> out;
+        if (!check(node_runtime::send_chunked(client, small.data(), small.size(), 2)) ||
+            !check(node_runtime::receive_chunked(server, out, 1000)) || out != small) return 1;
+
+        // The single-threaded selftest link must stay within socket buffers:
+        // a larger payload would deadlock before the peer reads.
+        std::vector<uint8_t> big(8192);
+        for (size_t i = 0; i < big.size(); ++i) {
+            big[i] = static_cast<uint8_t>(i & 0xff);
+        }
+        if (!check(node_runtime::send_chunked(client, big.data(), big.size(), 1000)) ||
+            !check(node_runtime::receive_chunked(server, out, 1000)) || out != big) return 1;
+
+        if (!check(node_runtime::send_chunked(client, nullptr, 0)) ||
+            !check(node_runtime::receive_chunked(server, out, 1000)) || !out.empty()) return 1;
+
+        if (!check(!node_runtime::send_chunked(client, big.data(), big.size(), 0)) ||
+            !check(!node_runtime::send_chunked(client, big.data(), big.size(),
+                                               node_runtime::chunk_max_bytes + 1))) return 1;
+
+        // A data frame sent where the meta frame is expected is rejected.
+        node_runtime::tcp_transport fault_listener;
+        if (!check(fault_listener.listen())) return 1;
+        node_runtime::tcp_transport fault_client;
+        if (!check(fault_client.connect("127.0.0.1", fault_listener.port()))) return 1;
+        node_runtime::tcp_transport fault_server = fault_listener.accept(1000);
+        if (!check(fault_server.valid())) return 1;
+        if (!check(node_runtime::send_message(fault_client, node_runtime::chunk_message_type + 1, "x", 1))) return 1;
+        node_runtime::framed_message fault_frame;
+        if (!check(!node_runtime::receive_message(fault_server, fault_frame, node_runtime::chunk_message_type, 100))) return 1;
+    }
     return 0;
 }

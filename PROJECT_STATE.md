@@ -161,3 +161,13 @@ MCP Memory is available. This file is kept in the repository so the project stat
 - Validation: `node-runtime-selftest` PASS; `test-batch-alloc` passed (30 tests, 198 assertions, 0 failures); `node-runtime-bench 256 100` averaged 0.148 ms round-trip (previous 0.146 ms); `git diff --check` PASS; build clean for `llama-cli` and `node-runtime-selftest`.
 - Real correctness/telemetry smoke on battery power (not a benchmark result): Qwen Q4_K_M on Metal produced the expected `pressure-ok` output. Telemetry reported `memory_pressure: level=critical free_ratio=0.088 wired_ratio=0.030 compressed_ratio=0.043`; the machine genuinely had little free memory at run time, so the critical classification is a true positive. Artifact: `benchmarks/baseline/2026-09-18-memory-pressure-smoke.log`.
 - No default inference path was modified; no performance comparison is claimed from this block.
+
+## Chunked transport block (2026-09-18)
+
+- Extended the node message framing with experimental chunked transfer: `send_chunked`/`receive_chunked` emit one metadata frame plus ordered data frames and validate sequence, per-frame size, and total on receipt. Limits: chunk 1 MiB, total 256 MiB, chunk type 64/65 reserved.
+- `send_message`/`receive_message` gained an optional per-call `max_payload` parameter; the default remains the original 4096-byte limit.
+- Enabled TCP_NODELAY on transport sockets. Without it, many small frames interacted with Nagle and delayed ACK and produced multi-second stalls.
+- Found and fixed a real single-thread deadlock in the benchmark: sending a payload larger than the socket buffers blocks in send while nobody drains the peer. The server leg of the chunked benchmark now runs on its own thread, matching the real deployment where the two sides are separate processes. The constraint is documented in the header; the selftest stays single-threaded with an 8 KiB payload.
+- Also fixed an inverted zero-size assertion in the selftest (empty chunk transfer must produce an empty buffer).
+- Benchmarks on loopback, M3, battery (single-run relative references only, not normal-power baselines): 1 MiB round trip with 64 KiB chunks = 2.13 GiB/s and with 1 MiB chunks = 2.58 GiB/s; 4096-byte frames = 174.35 MiB/s; 256-byte frames = 8.51 MiB/s. Before TCP_NODELAY the 1 MiB run showed 1.5-5 second stalls.
+- Validation: `node-runtime-selftest` PASS, `test-batch-alloc` 30/198/0 PASS, `git diff --check` PASS, clean build for bench, selftest, and `llama-cli`.

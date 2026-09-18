@@ -12,6 +12,7 @@
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -449,6 +450,8 @@ bool tcp_transport::listen(uint16_t port, const std::string & bind_address) {
     if (socket < 0) {
         return false;
     }
+    const int nodelay = 1;
+    ::setsockopt(socket, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
     sockaddr_in address{};
     address.sin_family = AF_INET;
     if (bind_address == "localhost") {
@@ -498,6 +501,8 @@ bool tcp_transport::connect(const std::string & host, uint16_t port) {
     if (socket < 0) {
         return false;
     }
+    const int nodelay = 1;
+    ::setsockopt(socket, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
     sockaddr_in address{};
     address.sin_family = AF_INET;
     if (host == "localhost") {
@@ -584,8 +589,8 @@ struct wire_header {
 }
 
 bool send_message(const tcp_transport & transport, uint16_t type,
-                  const void * payload, size_t payload_size) {
-    if (type == 0 || payload_size > message_max_payload ||
+                  const void * payload, size_t payload_size, size_t max_payload) {
+    if (type == 0 || payload_size > max_payload ||
         (payload_size != 0 && payload == nullptr)) {
         return false;
     }
@@ -595,14 +600,14 @@ bool send_message(const tcp_transport & transport, uint16_t type,
 }
 
 bool receive_message(const tcp_transport & transport, framed_message & message,
-                     uint16_t expected_type, int timeout_ms) {
+                     uint16_t expected_type, int timeout_ms, size_t max_payload) {
     wire_header header{};
     if (!receive_exact(transport, &header, sizeof(header), timeout_ms) ||
         ntohl(header.magic) != message_magic ||
         ntohs(header.version) != message_protocol_version ||
         ntohs(header.type) == 0 ||
         (expected_type != 0 && ntohs(header.type) != expected_type) ||
-        ntohl(header.payload_size) > message_max_payload) {
+        ntohl(header.payload_size) > max_payload) {
         return false;
     }
     const size_t size = ntohl(header.payload_size);
@@ -612,6 +617,65 @@ bool receive_message(const tcp_transport & transport, framed_message & message,
     }
     message.type = ntohs(header.type);
     message.payload = std::move(payload);
+    return true;
+}
+
+namespace {
+struct chunk_meta_payload {
+    uint64_t total_size;
+    uint32_t chunk_bytes;
+};
+}
+
+bool send_chunked(const tcp_transport & transport, const void * data, size_t size,
+                  size_t chunk_bytes) {
+    if ((size != 0 && data == nullptr) || chunk_bytes == 0 || chunk_bytes > chunk_max_bytes ||
+        size > chunk_max_total) {
+        return false;
+    }
+    const chunk_meta_payload meta{size, static_cast<uint32_t>(chunk_bytes)};
+    if (!send_message(transport, chunk_message_type, &meta, sizeof(meta))) {
+        return false;
+    }
+    const uint8_t * bytes = static_cast<const uint8_t *>(data);
+    size_t offset = 0;
+    while (offset < size) {
+        const size_t piece = std::min(chunk_bytes, size - offset);
+        if (!send_message(transport, chunk_message_type + 1, bytes + offset, piece, chunk_bytes)) {
+            return false;
+        }
+        offset += piece;
+    }
+    return true;
+}
+
+bool receive_chunked(const tcp_transport & transport, std::vector<uint8_t> & out,
+                     int timeout_ms, size_t chunk_bytes) {
+    framed_message meta_frame;
+    if (!receive_message(transport, meta_frame, chunk_message_type, timeout_ms) ||
+        meta_frame.payload.size() != sizeof(chunk_meta_payload)) {
+        return false;
+    }
+    chunk_meta_payload meta{};
+    std::memcpy(&meta, meta_frame.payload.data(), sizeof(meta));
+    if (meta.total_size > chunk_max_total || meta.chunk_bytes == 0 ||
+        meta.chunk_bytes > chunk_bytes) {
+        return false;
+    }
+    std::vector<uint8_t> result;
+    result.reserve(static_cast<size_t>(meta.total_size));
+    while (result.size() < meta.total_size) {
+        framed_message data_frame;
+        if (!receive_message(transport, data_frame, chunk_message_type + 1, timeout_ms, chunk_bytes)) {
+            return false;
+        }
+        if (data_frame.payload.size() > meta.chunk_bytes ||
+            result.size() + data_frame.payload.size() > meta.total_size) {
+            return false;
+        }
+        result.insert(result.end(), data_frame.payload.begin(), data_frame.payload.end());
+    }
+    out = std::move(result);
     return true;
 }
 

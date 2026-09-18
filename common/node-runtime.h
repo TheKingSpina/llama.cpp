@@ -223,8 +223,26 @@ struct framed_message {
 // Send and receive one complete, versioned frame. The receiver validates the
 // magic, version, type, and payload limit before allocating the payload.
 bool send_message(const tcp_transport & transport, uint16_t type,
-                  const void * payload, size_t payload_size);
+                  const void * payload, size_t payload_size,
+                  size_t max_payload = message_max_payload);
 bool receive_message(const tcp_transport & transport, framed_message & message,
-                     uint16_t expected_type = 0, int timeout_ms = -1);
+                     uint16_t expected_type = 0, int timeout_ms = -1,
+                     size_t max_payload = message_max_payload);
+
+// Experimental chunked transfer for payloads larger than one frame. The
+// sender emits one metadata frame followed by ordered data frames of at most
+// chunk_bytes bytes; the receiver validates the sequence, sizes, and total
+// before returning the assembled buffer. No threads, no background work.
+// The peer must drain the stream concurrently (its own thread or process):
+// a sequential send-then-receive over one connection deadlocks once bytes
+// in flight exceed the socket buffers.
+constexpr uint16_t chunk_message_type = 64;
+constexpr size_t chunk_max_bytes = 1024 * 1024;
+constexpr size_t chunk_max_total = 256 * 1024 * 1024;
+
+bool send_chunked(const tcp_transport & transport, const void * data, size_t size,
+                  size_t chunk_bytes = chunk_max_bytes);
+bool receive_chunked(const tcp_transport & transport, std::vector<uint8_t> & out,
+                     int timeout_ms = -1, size_t chunk_bytes = chunk_max_bytes);
 
 } // namespace node_runtime
