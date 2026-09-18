@@ -228,3 +228,11 @@ MCP Memory is available. This file is kept in the repository so the project stat
 - The gate is self-checking: one corrupted byte in an expert plane used by a token must change the output; the tool fails if corruption goes undetected.
 - This establishes the invariant the future cache-to-inference integration must preserve: slices placed at `e * expert_bytes` in a 3D tensor compute identically to the fused layout.
 - Validation: `expert-forward-check` PASS (bit-exact), `expert-catalog-selftest` PASS, `node-runtime-selftest` PASS, `test-batch-alloc` 30/198/0 PASS, `git diff --check` PASS, `llama-cli` builds clean.
+
+## Cache-backed MoE runner block (2026-09-18, branch research/moe-expert-sharding)
+
+- `expert_cache` now binds its catalog at construction; `serve` needs no catalog argument (three-argument form). Selftest updated.
+- Added `expert_moe_runner`: gathers the experts named by router ids through the cache. Duplicates count once (ordered unique); gathered planes are owned copies because a later serve in the same gather may evict an earlier one and dangling pointers were a real observed bug (bit-exact failure on the first run, fixed by deep copy at serve time).
+- `expert-forward-check` extends to three paths: full-tensor reference, reader-slice rebuild, and cache-backed gather with eviction pressure (capacity two experts, gather four, exactly two evictions). All three outputs are bit-exact against each other through the real `ggml_mul_mat_id` graph.
+- The cache path is the integration blueprint for a real MoE layer: per token, gather the routed experts from cache, place planes at `e * expert_bytes` in a 3D tensor, compute, drop. Correctness invariant holds under eviction.
+- Validation: `expert-forward-check` PASS (bit-exact on all three paths, 2 evictions), `expert-catalog-selftest` PASS, `node-runtime-selftest` PASS, `test-batch-alloc` 30/198/0 PASS, `git diff --check` PASS, `llama-cli` builds clean.
