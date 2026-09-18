@@ -219,3 +219,12 @@ MCP Memory is available. This file is kept in the repository so the project stat
 - Read of the results: the hot set (40 experts, 255 MiB) barely fits in 320 MiB, so LRU mostly holds it and the hit rate approaches the hot-share bound; at 64 MiB the ratio 10 hot experts over 40 predicts about 20 percent, which matches the measured 19.5 percent. Cold requests still evict hot entries under plain LRU; a hit-rate-driven or hot/cold-segmented policy is the recorded candidate improvement.
 - The per-request cost gap (0.75 ms versus 0.14 ms) is the measurable cache payoff; a top-1 decode pass touches 16 experts (one per layer), so a cache that holds the hot set turns a 24 ms I/O pass into a few ms.
 - Validation: `expert-catalog-selftest` PASS, `node-runtime-selftest` PASS, `test-batch-alloc` 30/198/0 PASS, `git diff --check` PASS.
+
+## Expert forward bit-exactness gate (2026-09-18, branch research/moe-expert-sharding)
+
+- Added `common/expert-forward-check.cpp` as the `expert-forward-check` executable, the correctness gate for the selective-loading design: it proves that expert weights rebuilt plane by plane from `expert_reader` slice reads produce the same output as the full fused 3D tensors through the real `ggml_mul_mat_id` graph.
+- Setup: synthetic GGUF with one MoE layer, separate gate/up/down expert tensors (F32, 32x24 and 24x32 planes, 4 experts), deterministic fill. The graph is `gate = gate_exps[:,:,id] @ b`, `up = up_exps[:,:,id] @ b`, `act = swiglu(gate, up)`, `out = down_exps[:,:,id] @ act` with two tokens, two experts each, all four experts participating. b is [n_embd, n_used, n_tokens] reshaped from the token input, matching the `mul_mat_id` contract.
+- The selective path reads experts 3, 1, 0, 2 in shuffled order and rebuilds the 3D tensors at `e * plane_bytes` offsets. Result: output is bit-exact (128 of 128 elements equal) against the full-tensor path.
+- The gate is self-checking: one corrupted byte in an expert plane used by a token must change the output; the tool fails if corruption goes undetected.
+- This establishes the invariant the future cache-to-inference integration must preserve: slices placed at `e * expert_bytes` in a 3D tensor compute identically to the fused layout.
+- Validation: `expert-forward-check` PASS (bit-exact), `expert-catalog-selftest` PASS, `node-runtime-selftest` PASS, `test-batch-alloc` 30/198/0 PASS, `git diff --check` PASS, `llama-cli` builds clean.
