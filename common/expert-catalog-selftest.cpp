@@ -258,8 +258,7 @@ int main() {
 
         expert_catalog::expert_reader reader;
         if (!check(!reader.valid())) return 1;
-        const bool opened = reader.open(moe_path);
-        if (!check(opened)) return 1;
+        if (!check(reader.open(moe_path))) return 1;
         if (!check(reader.valid())) return 1;
 
         const expert_catalog::expert_layer * layer0 = catalog.find_layer(0);
