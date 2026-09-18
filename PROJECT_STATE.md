@@ -208,3 +208,14 @@ MCP Memory is available. This file is kept in the repository so the project stat
 - Two real-file bugs fixed in the same block and committed as `270f2b33` (recorded above): the `.weight` name component and the quantized slice arithmetic.
 - The synthetic GGUF fill is now non-periodic so two 512-byte expert planes in one tensor are never byte-identical; the adjacent-slice-differ assertion is real coverage, not a tautology.
 - Validation: `expert-catalog-selftest` PASS, `node-runtime-selftest` PASS, `test-batch-alloc` 30/198/0 PASS, `git diff --check` PASS.
+
+## LRU expert cache block (2026-09-18, branch research/moe-expert-sharding)
+
+- Added `expert_cache` over one bound `expert_reader`: byte-bounded LRU with an entry bound. `serve` returns resident planes on hit (LRU refresh) and reads plus evicts on miss. Oversized experts and zero-capacity caches are served from a scratch buffer without being cached; failure paths propagate as miss plus false. Cumulative statistics survive `clear()`.
+- Selftest covers deterministic eviction order, exact byte accounting (loaded versus served), the hit-rate invariant, the clear path, the bypass path, the oversized path, and failure propagation.
+- Real-file trace on OLMoE-1B-7B q8_0 (deterministic LCG trace, seed fixed, 1000 requests, 80 percent from a 40-expert hot set spread over all 16 layers, 20 percent uniform over the 1024-expert key space; M3, battery):
+  - 64 MiB cache (10 experts): 19.5 percent hit rate, 795 evictions, 5.13 GiB loaded from SSD, 0.75-0.84 ms per request.
+  - 320 MiB cache (50 experts): 84.7 percent hit rate, 103 evictions, 975 MiB loaded, 0.14 ms per request.
+- Read of the results: the hot set (40 experts, 255 MiB) barely fits in 320 MiB, so LRU mostly holds it and the hit rate approaches the hot-share bound; at 64 MiB the ratio 10 hot experts over 40 predicts about 20 percent, which matches the measured 19.5 percent. Cold requests still evict hot entries under plain LRU; a hit-rate-driven or hot/cold-segmented policy is the recorded candidate improvement.
+- The per-request cost gap (0.75 ms versus 0.14 ms) is the measurable cache payoff; a top-1 decode pass touches 16 experts (one per layer), so a cache that holds the hot set turns a 24 ms I/O pass into a few ms.
+- Validation: `expert-catalog-selftest` PASS, `node-runtime-selftest` PASS, `test-batch-alloc` 30/198/0 PASS, `git diff --check` PASS.
