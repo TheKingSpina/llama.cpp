@@ -201,7 +201,8 @@ struct cache_stats {
 // integration.
 class expert_cache {
 public:
-    expert_cache(expert_reader & reader, uint64_t max_bytes,
+    expert_cache(const expert_catalog & catalog, expert_reader & reader,
+                 uint64_t max_bytes,
                  size_t max_entries = 4096);
 
     // Serve one expert. On hit, out points at the cached planes. On miss,
@@ -209,8 +210,8 @@ public:
     // needed. Returns false on unknown layer or expert, invalid reader,
     // or read failure. An expert larger than the whole capacity is served
     // without being cached.
-    bool serve(const expert_catalog & catalog, uint32_t layer_index,
-               uint32_t expert_index, const loaded_expert *& out);
+    bool serve(uint32_t layer_index, uint32_t expert_index,
+               const loaded_expert *& out);
 
     // Drop all resident entries. Statistics are cumulative and survive.
     void clear();
@@ -231,10 +232,11 @@ private:
         uint64_t bytes = 0;
     };
 
-    bool insert_and_serve(const expert_catalog & catalog, uint32_t layer_index,
+    bool insert_and_serve(uint32_t layer_index,
                           uint32_t expert_index, const loaded_expert *& out);
     void evict_until_fits(uint64_t incoming_bytes);
 
+    const expert_catalog & catalog_;
     expert_reader & reader_;
     uint64_t max_bytes_;
     size_t max_entries_;
@@ -243,6 +245,38 @@ private:
     uint64_t resident_bytes_ = 0;
     loaded_expert scratch_;
     cache_stats stats_;
+};
+
+// Experimental single-layer MoE runner over the cache. The caller supplies
+// the router decision (expert ids) and the activation input; the runner
+// serves each needed expert from the cache, gathers the per-expert weight
+// planes into a dense 3D tensor layout (expert e at e * plane bytes), and
+// exposes the two ggml_mul_mat_id graphs (gate/up gather, down project).
+// This mirrors what an inference integration would do per layer. No
+// router, no tokenizer, no threads.
+class expert_moe_runner {
+public:
+    expert_moe_runner(expert_cache & cache, uint32_t layer_index);
+
+    // Serve the experts named by ids (n_ids values) into out. The out
+    // pointers stay valid until the next gather or cache eviction, so the
+    // caller must consume them before serving other experts.
+    bool gather(const uint32_t * ids, size_t n_ids);
+
+    // Number of unique experts served by the last gather, in serve order.
+    size_t served_count() const;
+    // The expert id served into the given slot.
+    uint32_t served_id(size_t slot) const;
+
+    const loaded_expert & planes(size_t slot) const;
+
+    uint32_t layer_index() const;
+
+private:
+    expert_cache & cache_;
+    uint32_t layer_;
+    std::vector<loaded_expert> slots_;
+    std::vector<uint32_t> served_;
 };
 
 } // namespace expert_catalog

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <sstream>
 
 namespace expert_catalog {
@@ -584,9 +585,11 @@ bool expert_reader::read_expert(const expert_catalog & catalog,
     return true;
 }
 
-expert_cache::expert_cache(expert_reader & reader, uint64_t max_bytes,
+expert_cache::expert_cache(const expert_catalog & catalog,
+                           expert_reader & reader, uint64_t max_bytes,
                            size_t max_entries)
-    : reader_(reader), max_bytes_(max_bytes), max_entries_(max_entries) {}
+    : catalog_(catalog), reader_(reader), max_bytes_(max_bytes),
+      max_entries_(max_entries) {}
 
 void expert_cache::evict_until_fits(uint64_t incoming_bytes) {
     while (!lru_.empty() &&
@@ -599,12 +602,11 @@ void expert_cache::evict_until_fits(uint64_t incoming_bytes) {
     }
 }
 
-bool expert_cache::insert_and_serve(const expert_catalog & catalog,
-                                    uint32_t layer_index,
+bool expert_cache::insert_and_serve(uint32_t layer_index,
                                     uint32_t expert_index,
                                     const loaded_expert *& out) {
     loaded_expert planes;
-    if (!reader_.read_expert(catalog, layer_index, expert_index, planes)) {
+    if (!reader_.read_expert(catalog_, layer_index, expert_index, planes)) {
         return false;
     }
     const uint64_t bytes = slice_bytes_of(planes);
@@ -628,8 +630,8 @@ bool expert_cache::insert_and_serve(const expert_catalog & catalog,
     return true;
 }
 
-bool expert_cache::serve(const expert_catalog & catalog, uint32_t layer_index,
-                         uint32_t expert_index, const loaded_expert *& out) {
+bool expert_cache::serve(uint32_t layer_index, uint32_t expert_index,
+                         const loaded_expert *& out) {
     const auto found = index_.find(slice_key(layer_index, expert_index));
     if (found != index_.end()) {
         lru_.splice(lru_.begin(), lru_, found->second);
@@ -639,7 +641,7 @@ bool expert_cache::serve(const expert_catalog & catalog, uint32_t layer_index,
         return true;
     }
     ++stats_.misses;
-    return insert_and_serve(catalog, layer_index, expert_index, out);
+    return insert_and_serve(layer_index, expert_index, out);
 }
 
 void expert_cache::clear() {
@@ -676,6 +678,46 @@ std::string expert_cache::stats_json() const {
            << ",\"resident_bytes\":" << resident_bytes_
            << ",\"capacity_bytes\":" << max_bytes_ << '}';
     return result.str();
+}
+
+expert_moe_runner::expert_moe_runner(expert_cache & cache, uint32_t layer_index)
+    : cache_(cache), layer_(layer_index) {}
+
+bool expert_moe_runner::gather(const uint32_t * ids, size_t n_ids) {
+    slots_.clear();
+    served_.clear();
+    slots_.reserve(n_ids);
+    // Serving the same expert twice must count once for placement.
+    std::set<uint32_t> unique(ids, ids + n_ids);
+    for (const uint32_t id : unique) {
+        loaded_expert copy;
+        const loaded_expert * planes = nullptr;
+        if (!cache_.serve(layer_, id, planes)) {
+            return false;
+        }
+        // Deep copy: later serves in this gather may evict earlier ones,
+        // and the cache pointer dies with the evicted entry.
+        copy = *planes;
+        slots_.push_back(std::move(copy));
+        served_.push_back(id);
+    }
+    return true;
+}
+
+const loaded_expert & expert_moe_runner::planes(size_t slot) const {
+    return slots_.at(slot);
+}
+
+size_t expert_moe_runner::served_count() const {
+    return slots_.size();
+}
+
+uint32_t expert_moe_runner::served_id(size_t slot) const {
+    return served_.at(slot);
+}
+
+uint32_t expert_moe_runner::layer_index() const {
+    return layer_;
 }
 
 } // namespace expert_catalog

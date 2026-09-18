@@ -304,34 +304,34 @@ int main() {
         if (!check(reader.open(moe_path))) return 1;
 
         // Two entries fit, the third evicts the LRU one.
-        expert_catalog::expert_cache cache(reader, 2 * 1536);
+        expert_catalog::expert_cache cache(catalog, reader, 2 * 1536);
         if (!check(cache.capacity_bytes() == 2 * 1536)) return 1;
 
         const expert_catalog::loaded_expert * planes = nullptr;
-        if (!check(cache.serve(catalog, 0, 0, planes))) return 1;
+        if (!check(cache.serve(0, 0, planes))) return 1;
         if (!check(planes->gate.size() == 512)) return 1;
         if (!check(cache.resident_entries() == 1) ||
             !check(cache.resident_bytes() == 1536)) return 1;
 
         // Re-serve: hit with unchanged contents.
         const expert_catalog::loaded_expert * again = nullptr;
-        if (!check(cache.serve(catalog, 0, 0, again))) return 1;
+        if (!check(cache.serve(0, 0, again))) return 1;
         if (!check(again->gate == planes->gate)) return 1;
         if (!check(cache.stats().hits == 1) || !check(cache.stats().misses == 1)) {
             return 1;
         }
 
         // Second distinct expert: still fits.
-        if (!check(cache.serve(catalog, 0, 1, planes))) return 1;
+        if (!check(cache.serve(0, 1, planes))) return 1;
         if (!check(cache.resident_entries() == 2) ||
             !check(cache.resident_bytes() == 2 * 1536)) return 1;
 
         // Third distinct expert: expert (0,0) is the LRU and is evicted.
-        if (!check(cache.serve(catalog, 1, 0, planes))) return 1;
+        if (!check(cache.serve(1, 0, planes))) return 1;
         if (!check(cache.resident_entries() == 2) ||
             !check(cache.stats().evictions == 1)) return 1;
         // The evicted entry is (0,0): serving it again is a miss.
-        if (!check(cache.serve(catalog, 0, 0, planes))) return 1;
+        if (!check(cache.serve(0, 0, planes))) return 1;
         if (!check(cache.stats().misses == 4) ||
             !check(cache.stats().evictions == 2)) return 1;
 
@@ -353,27 +353,27 @@ int main() {
         if (!check(cache.stats().misses == 4)) return 1;
 
         // Zero capacity: every request is a miss, served from scratch.
-        expert_catalog::expert_cache bypass(reader, 0);
+        expert_catalog::expert_cache bypass(catalog, reader, 0);
         const expert_catalog::loaded_expert * scratch = nullptr;
-        if (!check(bypass.serve(catalog, 0, 0, scratch))) return 1;
+        if (!check(bypass.serve(0, 0, scratch))) return 1;
         if (!check(scratch->gate.size() == 512)) return 1;
         const expert_catalog::loaded_expert * scratch2 = nullptr;
-        if (!check(bypass.serve(catalog, 0, 1, scratch2))) return 1;
+        if (!check(bypass.serve(0, 1, scratch2))) return 1;
         if (!check(bypass.stats().hits == 0) ||
             !check(bypass.stats().misses == 2) ||
             !check(bypass.resident_entries() == 0)) return 1;
 
         // Oversized expert: served uncached, resident stays empty.
-        expert_catalog::expert_cache tiny(reader, 1);
+        expert_catalog::expert_cache tiny(catalog, reader, 1);
         const expert_catalog::loaded_expert * uncached = nullptr;
-        if (!check(tiny.serve(catalog, 0, 0, uncached))) return 1;
+        if (!check(tiny.serve(0, 0, uncached))) return 1;
         if (!check(uncached->gate.size() == 512) ||
             !check(tiny.resident_entries() == 0)) return 1;
 
         // Failures propagate: unknown layer is a miss that returns false.
-        expert_catalog::expert_cache fail_cache(reader, 2 * 1536);
+        expert_catalog::expert_cache fail_cache(catalog, reader, 2 * 1536);
         const expert_catalog::loaded_expert * fail_out = nullptr;
-        if (!check(!fail_cache.serve(catalog, 99, 0, fail_out))) return 1;
+        if (!check(!fail_cache.serve(99, 0, fail_out))) return 1;
         if (!check(fail_cache.stats().misses == 1)) return 1;
     }
 

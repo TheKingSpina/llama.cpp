@@ -256,6 +256,36 @@ int main() {
         return 1;
     }
 
+    // Cache path: same weights served through expert_cache under eviction
+    // pressure (capacity holds two experts, gather serves four).
+    std::vector<float> out_cache;
+    uint64_t evictions_seen = 0;
+    {
+        expert_catalog::expert_catalog catalog;
+        if (!check(catalog.load_from_gguf(path))) return 1;
+        expert_catalog::expert_reader reader;
+        if (!check(reader.open(path))) return 1;
+        expert_catalog::expert_cache cache(catalog, reader, 2 * 9216);
+        expert_catalog::expert_moe_runner runner(cache, 0);
+        const uint32_t ids4[] = {3, 1, 0, 2};
+        if (!check(runner.gather(ids4, 4))) return 1;
+        std::vector<expert_catalog::loaded_expert> rebuilt(n_expert);
+        for (size_t s = 0; s < runner.served_count(); ++s) {
+            rebuilt[runner.served_id(s)] = runner.planes(s);
+        }
+        if (!check(build_and_run(nullptr, nullptr, nullptr, rebuilt.data(),
+                                 inp.data(), ids.data(), out_cache))) {
+            std::remove(path.c_str());
+            return 1;
+        }
+        const expert_catalog::cache_stats & stats = cache.stats();
+        if (!check(stats.evictions >= 2) || !check(stats.hits == 0)) {
+            std::remove(path.c_str());
+            return 1;
+        }
+        evictions_seen = stats.evictions;
+    }
+
     if (!check(out_full == out_sel)) {
         std::fprintf(stderr, "forward mismatch: full %zu vs selective %zu\n",
                      out_full.size(), out_sel.size());
@@ -271,8 +301,22 @@ int main() {
     }
     std::printf("bit-exact: %zu output elements match\n", out_full.size());
 
-    // Sanity of the gate itself: one corrupted expert plane must change the
-    // output. Expert 1 is used by token 0.
+    // The cache path must also be bit-exact, with real eviction pressure:
+    // capacity holds only two of the four experts.
+    if (!check(out_cache == out_full)) {
+        std::fprintf(stderr, "cache path mismatch\n");
+        std::remove(path.c_str());
+        return 1;
+    }
+    if (!check(evictions_seen == 2)) {
+        std::remove(path.c_str());
+        return 1;
+    }
+    std::printf("cache path bit-exact too, evictions=%llu\n",
+                (unsigned long long)evictions_seen);
+
+    // Gate self-check: one corrupted expert plane must change the output.
+    // Expert 1 is used by token 0.
     {
         std::vector<expert_catalog::loaded_expert> corrupt(slices);
         std::vector<uint8_t> & plane = corrupt[1].gate;
