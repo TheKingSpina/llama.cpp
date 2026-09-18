@@ -198,3 +198,13 @@ MCP Memory is available. This file is kept in the repository so the project stat
 - Known limitation, deliberate for this block: the GGUF stores experts fused per tensor (`[n_embd, n_ff, n_expert]`), so per-expert granularity here is bookkeeping on slices, not independent tensors. Selective loading of a subset of experts requires the loader change planned for the next block.
 - Not yet measured on a real MoE GGUF: no local MoE model file exists (only the dense Qwen2.5-0.5B baseline). Download a small MoE (for example Qwen3-30B-A3B or smaller) and rerun the catalog read as a real-file check.
 - Validation: `expert-catalog-selftest` PASS, `node-runtime-selftest` PASS, `test-batch-alloc` 30/198/0 PASS, `git diff --check` PASS, clean build for `llama-cli`.
+
+## Selective expert reader block (2026-09-18, branch research/moe-expert-sharding)
+
+- `expert_catalog::load_from_gguf` now records, for each expert tensor, the absolute file offset of the expert-0 plane (data offset + tensor offset). Each `expert_layer` exposes the per-tensor plane offsets.
+- Added `expert_catalog::expert_reader`: opens the file and reads one expert's per-tensor planes at `data offset + tensor offset + slice x expert index`. Synchronous, no threads, no cache, no inference integration. Empty tensors (2D shapes without an expert axis) produce empty vectors; out-of-bounds experts and unknown layers are rejected.
+- Real-file verification on OLMoE-1B-7B q8_0 (6.86 GiB, `models/moe/`): catalog reports 16 MoE layers, 64 experts per layer, 6.38 MiB per expert, 6.38 GiB of expert weights total. A full top-1 pass (16 experts, 102 MiB) reads in 23.7 ms on the M3, battery, from SSD; warm repeated reads reach 0.79 ms per expert (8.0 GiB/s, page cache). Reading a 1 GiB working set (160 experts) takes 426 ms cold-ish, 2.66 ms per expert.
+- Selftest now writes real tensor data into the synthetic GGUF (distinct fill per tensor) and covers the reader: byte-exact slice reads, adjacent-slice difference, out-of-bounds expert, unknown layer, and unopened-reader failure.
+- Two real-file bugs fixed in the same block and committed as `270f2b33` (recorded above): the `.weight` name component and the quantized slice arithmetic.
+- The synthetic GGUF fill is now non-periodic so two 512-byte expert planes in one tensor are never byte-identical; the adjacent-slice-differ assertion is real coverage, not a tautology.
+- Validation: `expert-catalog-selftest` PASS, `node-runtime-selftest` PASS, `test-batch-alloc` 30/198/0 PASS, `git diff --check` PASS.
