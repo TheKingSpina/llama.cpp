@@ -1,4 +1,5 @@
 #include "node-runtime.h"
+#include "apple-runtime.h"
 
 #include <cstring>
 #include <cstdint>
@@ -267,5 +268,100 @@ int main() {
     // Heartbeats keep flowing for known nodes through the registry path.
     if (!check(node_runtime::send_message(client, 4, &heartbeat, sizeof(heartbeat)))) return 1;
     if (!check(node_runtime::receive_message(server, received_heartbeat, 4, 1000))) return 1;
+
+    // Memory pressure classification on synthetic snapshots.
+    {
+        apple_runtime::system_telemetry telemetry;
+        telemetry.physical_memory = 16ull * 1024 * 1024 * 1024;
+        telemetry.free_memory = 8ull * 1024 * 1024 * 1024;
+        telemetry.wired_memory = 4ull * 1024 * 1024 * 1024;
+        telemetry.compressed_memory = 1ull * 1024 * 1024 * 1024;
+        telemetry.process_resident_memory = 512ull * 1024 * 1024;
+        apple_runtime::memory_pressure_assessment assessment =
+            apple_runtime::assess_memory_pressure(telemetry);
+        if (!check(assessment.level == apple_runtime::memory_pressure_level::normal) ||
+            !check(assessment.wired_ratio == 0.25) || !check(assessment.free_ratio == 0.5) ||
+            !check(assessment.compressed_ratio == 0.0625) ||
+            !check(assessment.process_resident_ratio == 0.03125)) return 1;
+
+        telemetry.wired_memory = 12ull * 1024 * 1024 * 1024;
+        assessment = apple_runtime::assess_memory_pressure(telemetry);
+        if (!check(assessment.level == apple_runtime::memory_pressure_level::warning)) return 1;
+
+        telemetry.wired_memory = 13ull * 1024 * 1024 * 1024;
+        assessment = apple_runtime::assess_memory_pressure(telemetry);
+        if (!check(assessment.level == apple_runtime::memory_pressure_level::critical)) return 1;
+        telemetry.wired_memory = 4ull * 1024 * 1024 * 1024;
+
+        telemetry.compressed_memory = 4ull * 1024 * 1024 * 1024;
+        assessment = apple_runtime::assess_memory_pressure(telemetry);
+        if (!check(assessment.level == apple_runtime::memory_pressure_level::warning)) return 1;
+        telemetry.compressed_memory = 6ull * 1024 * 1024 * 1024;
+        assessment = apple_runtime::assess_memory_pressure(telemetry);
+        if (!check(assessment.level == apple_runtime::memory_pressure_level::critical)) return 1;
+        telemetry.compressed_memory = 1ull * 1024 * 1024 * 1024;
+
+        telemetry.free_memory = 512ull * 1024 * 1024;
+        assessment = apple_runtime::assess_memory_pressure(telemetry);
+        if (!check(assessment.level == apple_runtime::memory_pressure_level::critical)) return 1;
+
+        telemetry.free_memory = 8ull * 1024 * 1024 * 1024;
+        apple_runtime::memory_pressure_config strict;
+        strict.warning_wired_ratio = 0.10;
+        if (!check(apple_runtime::assess_memory_pressure(telemetry, strict).level ==
+                   apple_runtime::memory_pressure_level::warning)) return 1;
+
+        apple_runtime::system_telemetry empty_telemetry;
+        const apple_runtime::memory_pressure_assessment empty_assessment =
+            apple_runtime::assess_memory_pressure(empty_telemetry);
+        if (!check(empty_assessment.level == apple_runtime::memory_pressure_level::normal) ||
+            !check(empty_assessment.wired_ratio == 0.0)) return 1;
+    }
+
+    // Tier reservation bookkeeping.
+    {
+        apple_runtime::memory_budget budget(4);
+        const uint64_t gib = 1024ull * 1024 * 1024;
+        if (!check(budget.set_capacity(apple_runtime::memory_tier::unified_ram, 8 * gib)) ||
+            !check(budget.capacity(apple_runtime::memory_tier::unified_ram) == 8 * gib) ||
+            !check(budget.reserved(apple_runtime::memory_tier::unified_ram) == 0)) return 1;
+
+        if (!check(budget.reserve("model", apple_runtime::memory_tier::unified_ram, 4 * gib, 10)) ||
+            !check(budget.reserve("kv", apple_runtime::memory_tier::unified_ram, 1 * gib, 11))) return 1;
+        if (!check(budget.reserved(apple_runtime::memory_tier::unified_ram) == 5 * gib) ||
+            !check(budget.available(apple_runtime::memory_tier::unified_ram) == 3 * gib) ||
+            !check(budget.size() == 2)) return 1;
+
+        if (!check(!budget.reserve("too-big", apple_runtime::memory_tier::unified_ram, 4 * gib)) ||
+            !check(!budget.reserve("", apple_runtime::memory_tier::unified_ram, 1)) ||
+            !check(!budget.reserve("zero", apple_runtime::memory_tier::unified_ram, 0)) ||
+            !check(!budget.reserve("model", apple_runtime::memory_tier::unified_ram, 1)) ||
+            !check(!budget.reserve("no-capacity", apple_runtime::memory_tier::gpu, 1024))) return 1;
+        if (!check(budget.size() == 2) ||
+            !check(budget.reserved(apple_runtime::memory_tier::unified_ram) == 5 * gib)) return 1;
+
+        const auto bogus_tier = static_cast<apple_runtime::memory_tier>(200);
+        if (!check(!budget.set_capacity(bogus_tier, 1)) ||
+            !check(!budget.reserve("bogus", bogus_tier, 1)) ||
+            !check(budget.capacity(bogus_tier) == 0) ||
+            !check(budget.available(bogus_tier) == 0)) return 1;
+
+        if (!check(!budget.release("missing"))) return 1;
+        if (!check(budget.release("model")) ||
+            !check(budget.reserved(apple_runtime::memory_tier::unified_ram) == 1 * gib) ||
+            !check(budget.available(apple_runtime::memory_tier::unified_ram) == 7 * gib) ||
+            !check(budget.size() == 1)) return 1;
+        if (!check(budget.reserve("model", apple_runtime::memory_tier::unified_ram, 2 * gib, 12))) return 1;
+
+        // Reservation table bound is enforced.
+        if (!check(budget.reserve("r3", apple_runtime::memory_tier::unified_ram, 1 * gib, 13)) ||
+            !check(budget.reserve("r4", apple_runtime::memory_tier::unified_ram, 1 * gib, 14)) ||
+            !check(budget.size() == 4) ||
+            !check(!budget.reserve("r5", apple_runtime::memory_tier::unified_ram, 1))) return 1;
+        if (!check(budget.reservations()[0].label == "kv") ||
+            !check(budget.reservations()[0].created_at_ms == 11) ||
+            !check(budget.reservations()[1].label == "model") ||
+            !check(budget.reservations()[1].created_at_ms == 12)) return 1;
+    }
     return 0;
 }

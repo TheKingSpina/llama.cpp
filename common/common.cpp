@@ -420,6 +420,7 @@ void common_params_print_info(const common_params & params, bool print_devices) 
     COM_TRC("%s\n", common_params_get_system_info(params).c_str());
     if (params.apple_telemetry) {
         const auto telemetry = apple_runtime::system_snapshot();
+        const auto pressure = apple_runtime::assess_memory_pressure(telemetry);
         const auto capabilities = node_runtime::local_capabilities();
         COM_INF("apple_telemetry: chip=%s apple_silicon=%s physical=%llu MiB free=%llu MiB active=%llu MiB wired=%llu MiB compressed=%llu MiB rss=%llu MiB peak_rss=%llu MiB\n",
             telemetry.chip.c_str(), telemetry.apple_silicon ? "yes" : "no",
@@ -430,6 +431,10 @@ void common_params_print_info(const common_params & params, bool print_devices) 
             static_cast<unsigned long long>(telemetry.compressed_memory / 1024 / 1024),
             static_cast<unsigned long long>(telemetry.process_resident_memory / 1024 / 1024),
             static_cast<unsigned long long>(telemetry.process_peak_resident_memory / 1024 / 1024));
+        COM_INF("memory_pressure: level=%s wired_ratio=%.3f compressed_ratio=%.3f free_ratio=%.3f process_resident_ratio=%.3f\n",
+            apple_runtime::memory_pressure_level_name(pressure.level),
+            pressure.wired_ratio, pressure.compressed_ratio, pressure.free_ratio,
+            pressure.process_resident_ratio);
         COM_INF("node_capabilities: %s\n", node_runtime::capabilities_json(capabilities).c_str());
         const size_t device_count = ggml_backend_dev_count();
         COM_INF("backend_devices: count=%zu\n", device_count);

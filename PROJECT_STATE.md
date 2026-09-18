@@ -12,7 +12,7 @@ Phase 2 - opt-in Apple Silicon infrastructure.
 
 ## Current task
 
-Add low-overhead telemetry and explicit memory-tier metadata without changing default inference behavior.
+Add memory-pressure classification and tier reservation bookkeeping (memory_budget) on top of the telemetry snapshot; keep default inference behavior unchanged.
 
 ## Accelerated order
 
@@ -150,3 +150,14 @@ MCP Memory is available. This file is kept in the repository so the project stat
 - Cluster remains standby; no M1/M4 connections or distributed benchmarks were run.
 - Local-only Qwen Metal gate passed with telemetry visible and output `baseline-ok`: 711.3 prompt t/s and 106.9 generation t/s. Snapshot: 1548 MiB free, 1386 MiB active, 506 MiB wired, 508 MiB compressed, 68 MiB RSS. Artifact: `benchmarks/baseline/2026-08-27-qwen-local-final.log`.
 - Local validation passed after the transport block: `node-runtime-selftest`, `node-runtime-bench 256 100` (0.146 ms average round-trip, 6867.36 messages/s, 3.35 MiB/s), `test-batch-alloc` (30 tests, 198 assertions), and `git diff --check`.
+
+## Memory pressure block (2026-09-18)
+
+- Extended `common/apple-runtime.{h,cpp}` with `memory_pressure_config`, `memory_pressure_level` (normal/warning/critical), and `memory_pressure_assessment`. `assess_memory_pressure` is a pure classification of one snapshot: wired or compressed ratio at or above a threshold raises the level, a free ratio below the floor raises critical directly. Defaults are conservative: wired 0.66/0.80, compressed 0.20/0.32, free floor 0.10. A zero-physical-memory snapshot classifies as normal.
+- Added an experimental caller-driven `memory_budget` for planned reservations per `memory_tier` with explicit per-tier capacities, duplicate-label rejection, unknown-tier rejection, a bounded reservation table (default 16), and insertion-ordered listing. It allocates no real memory and is not consulted by inference.
+- The opt-in telemetry report now prints one `memory_pressure` line with level and wired/compressed/free/resident ratios (INFO level, visible with `-lv 3`). Default inference behavior is unchanged.
+- Extended `node-runtime-selftest` with deterministic pressure-threshold coverage (warning/critical on wired, compressed, and free, custom config, zero-memory snapshot) and full `memory_budget` coverage (reserve, duplicate, exhaust, release, unknown tier, table bound, insertion order).
+- A first selftest run failed because the strict-config assertion inherited a low free-memory value from a previous scenario. Fixed by resetting the scenario state; the classification itself was correct.
+- Validation: `node-runtime-selftest` PASS; `test-batch-alloc` passed (30 tests, 198 assertions, 0 failures); `node-runtime-bench 256 100` averaged 0.148 ms round-trip (previous 0.146 ms); `git diff --check` PASS; build clean for `llama-cli` and `node-runtime-selftest`.
+- Real correctness/telemetry smoke on battery power (not a benchmark result): Qwen Q4_K_M on Metal produced the expected `pressure-ok` output. Telemetry reported `memory_pressure: level=critical free_ratio=0.088 wired_ratio=0.030 compressed_ratio=0.043`; the machine genuinely had little free memory at run time, so the critical classification is a true positive. Artifact: `benchmarks/baseline/2026-09-18-memory-pressure-smoke.log`.
+- No default inference path was modified; no performance comparison is claimed from this block.
