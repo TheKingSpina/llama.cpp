@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <vector>
 #include <string>
 #include <vector>
 
@@ -28,9 +29,9 @@ bool write_synthetic_gguf(const std::string & path,
                           uint32_t expert_count_kv,
                           const std::vector<tensor_spec> & tensors) {
     ggml_init_params gparams;
-    gparams.mem_size = 1024 * 1024;
+    gparams.mem_size = 32 * 1024 * 1024;
     gparams.mem_buffer = nullptr;
-    gparams.no_alloc = true;
+    gparams.no_alloc = false;
     ggml_context * ctx = ggml_init(gparams);
     if (ctx == nullptr) {
         return false;
@@ -48,9 +49,17 @@ bool write_synthetic_gguf(const std::string & path,
     for (const tensor_spec & spec : tensors) {
         ggml_tensor * tensor = ggml_new_tensor(ctx, spec.type, 3, spec.ne);
         ggml_set_name(tensor, spec.name.c_str());
+        // Non-periodic fill: the (b / 256) term breaks the period-256 cycle
+        // of (b * 7), so two 512-byte expert planes in one tensor differ.
+        std::vector<uint8_t> data(ggml_nbytes(tensor));
+        const uint8_t seed = static_cast<uint8_t>(spec.name.size() * 31 + spec.ne[0]);
+        for (size_t b = 0; b < data.size(); ++b) {
+            data[b] = static_cast<uint8_t>((b * 7 + b / 256 + seed) & 0xff);
+        }
+        std::memcpy(ggml_get_data(tensor), data.data(), data.size());
         gguf_add_tensor(gguf, tensor);
     }
-    const bool written = gguf_write_to_file(gguf, path.c_str(), true);
+    const bool written = gguf_write_to_file(gguf, path.c_str(), false);
     gguf_free(gguf);
     ggml_free(ctx);
     return written;
@@ -241,6 +250,51 @@ int main() {
         if (!check(small.assign(0, 0, "node-a")) ||
             !check(small.assign(0, 1, "node-a")) ||
             !check(!small.assign(0, 2, "node-a"))) return 1;
+    }
+
+    // Selective expert reader: byte-exact slice reads on the synthetic file.
+    {
+        expert_catalog::expert_catalog catalog;
+        if (!check(catalog.load_from_gguf(moe_path))) return 1;
+
+        expert_catalog::expert_reader reader;
+        if (!check(!reader.valid())) return 1;
+        const bool opened = reader.open(moe_path);
+        if (!check(opened)) return 1;
+        if (!check(reader.valid())) return 1;
+
+        const expert_catalog::expert_layer * layer0 = catalog.find_layer(0);
+        if (layer0 == nullptr) return 1;
+        if (!check(layer0->gate_data_offset != 0)) return 1;
+
+        // Read experts 0 and 1 of layer 0: separate gate/up/down tensors.
+        expert_catalog::loaded_expert slice0;
+        const bool r0 = reader.read_expert(catalog, 0, 0, slice0);
+        if (!check(r0)) return 1;
+        if (!check(slice0.gate.size() == layer0->gate_bytes) ||
+            !check(slice0.up.size() == layer0->up_bytes) ||
+            !check(slice0.down.size() == layer0->down_bytes) ||
+            !check(slice0.gate_up.empty())) return 1;
+
+        expert_catalog::loaded_expert slice1;
+        const bool r1 = reader.read_expert(catalog, 0, 1, slice1);
+        if (!check(r1)) return 1;
+        if (!check(slice1.gate.size() == layer0->gate_bytes)) return 1;
+        // Adjacent slices must differ: synthetic tensors hold distinct bytes.
+        const bool differs = slice0.gate != slice1.gate;
+        if (!check(differs)) return 1;
+
+        // Bounds checks.
+        expert_catalog::loaded_expert bad;
+        const bool over = reader.read_expert(catalog, 0, layer0->expert_count, bad);
+        const bool ghost = reader.read_expert(catalog, 99, 0, bad);
+        if (!check(!over)) return 1;
+        if (!check(!ghost)) return 1;
+
+        // A reader without an open file must fail.
+        expert_catalog::expert_reader closed_reader;
+        const bool closed = closed_reader.read_expert(catalog, 0, 0, bad);
+        if (!check(!closed)) return 1;
     }
 
     std::remove(moe_path.c_str());

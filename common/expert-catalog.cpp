@@ -4,6 +4,7 @@
 #include "gguf.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <sstream>
 
@@ -109,6 +110,12 @@ struct layer_accumulator {
     uint32_t down_experts = 0;
     uint32_t gate_experts = 0;
     uint32_t up_experts = 0;
+    // Absolute data offset of the expert 0 plane in each tensor; 0 when
+    // the tensor is absent or has no sliceable expert axis.
+    uint64_t gate_up_plane_offset = 0;
+    uint64_t down_plane_offset = 0;
+    uint64_t gate_plane_offset = 0;
+    uint64_t up_plane_offset = 0;
 };
 
 // Effective dimension count of the tensor.
@@ -151,13 +158,14 @@ uint64_t tensor_slice_bytes(const gguf_context * ctx, int64_t tensor_id) {
 
 void accumulate(layer_accumulator & acc, fused_kind kind,
                 uint64_t total_bytes, uint64_t slice_bytes,
-                uint32_t experts) {
+                uint64_t plane_offset, uint32_t experts) {
     switch (kind) {
         case fused_gate_up_exps:
         case fused_gate_up_ff:
             acc.has_gate_up = true;
             acc.gate_up_total_bytes = total_bytes;
             acc.gate_up_slice_bytes = slice_bytes;
+            acc.gate_up_plane_offset = plane_offset;
             acc.gate_up_experts = experts;
             break;
         case fused_down_exps:
@@ -165,23 +173,41 @@ void accumulate(layer_accumulator & acc, fused_kind kind,
             acc.has_down = true;
             acc.down_total_bytes = total_bytes;
             acc.down_slice_bytes = slice_bytes;
+            acc.down_plane_offset = plane_offset;
             acc.down_experts = experts;
             break;
         case fused_gate_exps:
             acc.has_gate = true;
             acc.gate_total_bytes = total_bytes;
             acc.gate_slice_bytes = slice_bytes;
+            acc.gate_plane_offset = plane_offset;
             acc.gate_experts = experts;
             break;
         case fused_up_exps:
             acc.has_up = true;
             acc.up_total_bytes = total_bytes;
             acc.up_slice_bytes = slice_bytes;
+            acc.up_plane_offset = plane_offset;
             acc.up_experts = experts;
             break;
         default:
             break;
     }
+}
+
+// Absolute file offset of one expert plane in a 3D expert tensor.
+uint64_t tensor_plane_offset(const gguf_context * ctx, int64_t tensor_id,
+                             uint32_t expert_index) {
+    const int64_t * ne = gguf_get_tensor_ne(ctx, tensor_id);
+    if (tensor_dims(ne) != 3) {
+        return 0;
+    }
+    const uint64_t slice = tensor_slice_bytes(ctx, tensor_id);
+    if (slice == 0) {
+        return 0;
+    }
+    return gguf_get_data_offset(ctx) + gguf_get_tensor_offset(ctx, tensor_id) +
+           slice * static_cast<uint64_t>(expert_index);
 }
 
 } // namespace
@@ -227,7 +253,7 @@ bool expert_catalog::load_from_gguf(const std::string & path) {
         }
         accumulate(accumulators[fused.layer_index], fused.kind,
                    gguf_get_tensor_size(ctx, i), tensor_slice_bytes(ctx, i),
-                   tensor_expert_count(ctx, i));
+                   tensor_plane_offset(ctx, i, 0), tensor_expert_count(ctx, i));
     }
     gguf_free(ctx);
 
@@ -269,6 +295,10 @@ bool expert_catalog::load_from_gguf(const std::string & path) {
         entry.down_total_bytes = acc.down_total_bytes;
         entry.gate_total_bytes = acc.gate_total_bytes;
         entry.up_total_bytes = acc.up_total_bytes;
+        entry.gate_up_data_offset = acc.gate_up_plane_offset;
+        entry.down_data_offset = acc.down_plane_offset;
+        entry.gate_data_offset = acc.gate_plane_offset;
+        entry.up_data_offset = acc.up_plane_offset;
         // Per-expert slice bytes: exact plane size for 3D expert tensors,
         // total divided by the expert count when the shape carries no
         // expert axis. A layer with an indivisible tensor is skipped.
@@ -447,6 +477,96 @@ std::string expert_placement_table::json() const {
     }
     result << "]}";
     return result.str();
+}
+
+expert_reader::~expert_reader() {
+    close();
+}
+
+bool expert_reader::open(const std::string & path) {
+    close();
+    file_ = std::fopen(path.c_str(), "rb");
+    return file_ != nullptr;
+}
+
+void expert_reader::close() {
+    if (file_ != nullptr) {
+        std::fclose(file_);
+        file_ = nullptr;
+    }
+}
+
+bool expert_reader::valid() const {
+    return file_ != nullptr;
+}
+
+namespace {
+
+bool read_at(std::FILE * file, uint64_t offset, uint64_t size,
+             std::vector<uint8_t> & out) {
+    out.clear();
+    if (size == 0) {
+        return true;
+    }
+    out.resize(static_cast<size_t>(size));
+#ifdef _WIN32
+    if (_fseeki64(file, static_cast<__int64>(offset), SEEK_SET) != 0) {
+        return false;
+    }
+#else
+    if (fseeko(file, static_cast<off_t>(offset), SEEK_SET) != 0) {
+        return false;
+    }
+#endif
+    return std::fread(out.data(), 1, static_cast<size_t>(size), file) == size;
+}
+
+} // namespace
+
+bool expert_reader::read_expert(const expert_catalog & catalog,
+                                uint32_t layer_index, uint32_t expert_index,
+                                loaded_expert & out) {
+    if (file_ == nullptr) {
+        return false;
+    }
+    const expert_layer * layer = catalog.find_layer(layer_index);
+    if (layer == nullptr || expert_index >= layer->expert_count) {
+        return false;
+    }
+    out = {};
+    if (layer->gate_up_bytes != 0 && layer->gate_up_data_offset != 0) {
+        if (!read_at(file_, layer->gate_up_data_offset +
+                             layer->gate_up_bytes *
+                                 static_cast<uint64_t>(expert_index),
+                     layer->gate_up_bytes, out.gate_up)) {
+            return false;
+        }
+    }
+    if (layer->down_bytes != 0 && layer->down_data_offset != 0) {
+        if (!read_at(file_, layer->down_data_offset +
+                             layer->down_bytes *
+                                 static_cast<uint64_t>(expert_index),
+                     layer->down_bytes, out.down)) {
+            return false;
+        }
+    }
+    if (layer->gate_bytes != 0 && layer->gate_data_offset != 0) {
+        if (!read_at(file_, layer->gate_data_offset +
+                             layer->gate_bytes *
+                                 static_cast<uint64_t>(expert_index),
+                     layer->gate_bytes, out.gate)) {
+            return false;
+        }
+    }
+    if (layer->up_bytes != 0 && layer->up_data_offset != 0) {
+        if (!read_at(file_, layer->up_data_offset +
+                             layer->up_bytes *
+                                 static_cast<uint64_t>(expert_index),
+                     layer->up_bytes, out.up)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace expert_catalog

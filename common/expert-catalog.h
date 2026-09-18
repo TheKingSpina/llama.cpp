@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdio>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -28,6 +29,12 @@ struct expert_layer {
     uint64_t down_total_bytes = 0;
     uint64_t gate_total_bytes = 0;
     uint64_t up_total_bytes = 0;
+    // Absolute file offset of the expert 0 plane in each tensor; 0 when
+    // the tensor does not exist or has no sliceable expert axis.
+    uint64_t gate_up_data_offset = 0;
+    uint64_t down_data_offset = 0;
+    uint64_t gate_data_offset = 0;
+    uint64_t up_data_offset = 0;
     // Per-expert total, gate_up plus down when both exist.
     uint64_t expert_bytes() const {
         return gate_up_bytes + down_bytes + gate_bytes + up_bytes;
@@ -137,6 +144,41 @@ private:
     const expert_catalog & catalog_;
     size_t max_entries_;
     std::vector<expert_placement> entries_;
+};
+
+// One loaded expert slice: the per-tensor planes read from the file.
+struct loaded_expert {
+    std::vector<uint8_t> gate_up;
+    std::vector<uint8_t> down;
+    std::vector<uint8_t> gate;
+    std::vector<uint8_t> up;
+};
+
+// Experimental selective expert reader. Reads one expert's byte planes
+// from the GGUF file at computed offsets. Synchronous and caller-driven:
+// no threads, no caching, no inference integration. The offsets come from
+// the catalog, which must have been built from the same file.
+class expert_reader {
+public:
+    expert_reader() = default;
+    ~expert_reader();
+
+    expert_reader(const expert_reader &) = delete;
+    expert_reader & operator=(const expert_reader &) = delete;
+
+    // Open the file for slice reads. Returns false when the file cannot
+    // be opened.
+    bool open(const std::string & path);
+    void close();
+    bool valid() const;
+
+    // Read one expert slice of the given layer into out. Returns false on
+    // unknown layer, out-of-bounds expert, invalid reader, or short read.
+    bool read_expert(const expert_catalog & catalog, uint32_t layer_index,
+                     uint32_t expert_index, loaded_expert & out);
+
+private:
+    std::FILE * file_ = nullptr;
 };
 
 } // namespace expert_catalog
