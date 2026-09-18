@@ -194,6 +194,10 @@ add_executable(expert-catalog-selftest expert-catalog-selftest.cpp)
 target_link_libraries(expert-catalog-selftest PRIVATE llama-common)
 target_compile_features(expert-catalog-selftest PRIVATE cxx_std_17)
 
+add_executable(expert-forward-check expert-forward-check.cpp)
+target_link_libraries(expert-forward-check PRIVATE llama-common)
+target_compile_features(expert-forward-check PRIVATE cxx_std_17)
+
 add_executable(node-runtime-bench node-runtime-bench.cpp)
 target_link_libraries(node-runtime-bench PRIVATE llama-common)
 target_compile_features(node-runtime-bench PRIVATE cxx_std_17)
