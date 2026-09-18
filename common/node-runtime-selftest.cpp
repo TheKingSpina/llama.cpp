@@ -269,6 +269,26 @@ int main() {
     if (!check(node_runtime::send_message(client, 4, &heartbeat, sizeof(heartbeat)))) return 1;
     if (!check(node_runtime::receive_message(server, received_heartbeat, 4, 1000))) return 1;
 
+    // Graceful departure: registry transitions and wire handshake.
+    {
+        if (!check(!registry.mark_departed("ghost", 200))) return 1;
+        if (!check(registry.mark_departed("node-a", 200)) ||
+            !check(registry.find("node-a")->state == node_runtime::lifecycle_state::stopped)) return 1;
+        // A stopped node stays stopped: heartbeats do not resurrect it.
+        registry.observe_heartbeat("node-a", 5, 210);
+        if (!check(registry.find("node-a")->state == node_runtime::lifecycle_state::stopped)) return 1;
+        // Re-registration returns the node to running.
+        if (!check(registry.register_node(caps_a, 220)) ||
+            !check(registry.find("node-a")->state == node_runtime::lifecycle_state::running)) return 1;
+
+        if (!check(node_runtime::send_message(client, node_runtime::departure_message_type,
+                                              caps_a.node_id.data(), caps_a.node_id.size()))) return 1;
+        node_runtime::framed_message departure_frame;
+        if (!check(node_runtime::receive_message(server, departure_frame,
+                                                 node_runtime::departure_message_type, 1000)) ||
+            !check(std::string(departure_frame.payload.begin(), departure_frame.payload.end()) == caps_a.node_id)) return 1;
+    }
+
     // Memory pressure classification on synthetic snapshots.
     {
         apple_runtime::system_telemetry telemetry;

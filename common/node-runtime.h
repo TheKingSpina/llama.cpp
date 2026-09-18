@@ -141,6 +141,8 @@ public:
     bool register_node(const capabilities & capabilities, uint64_t now_ms);
     // Record a received heartbeat for a known node.
     void observe_heartbeat(const std::string & node_id, uint64_t sequence, uint64_t now_ms);
+    // Mark a node as deliberately stopped. Returns false when unknown.
+    bool mark_departed(const std::string & node_id, uint64_t now_ms);
     // Mark nodes past the heartbeat timeout as timed_out. Returns how many
     // entries transitioned on this call.
     size_t expire_stale(uint64_t now_ms, uint64_t timeout_ms);
@@ -214,6 +216,7 @@ private:
 constexpr uint32_t message_magic = 0x4e52544d; // "NRTM"
 constexpr uint16_t message_protocol_version = 1;
 constexpr size_t message_max_payload = 4096;
+constexpr uint16_t departure_message_type = 6;
 
 struct framed_message {
     uint16_t type = 0;

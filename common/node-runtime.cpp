@@ -354,6 +354,16 @@ void node_registry::observe_heartbeat(const std::string & node_id, uint64_t sequ
     }
 }
 
+bool node_registry::mark_departed(const std::string & node_id, uint64_t now_ms) {
+    node_registry_entry * entry = find(node_id);
+    if (entry == nullptr) {
+        return false;
+    }
+    entry->state = lifecycle_state::stopped;
+    entry->last_heartbeat_ms = now_ms;
+    return true;
+}
+
 size_t node_registry::expire_stale(uint64_t now_ms, uint64_t timeout_ms) {
     size_t expired = 0;
     for (node_registry_entry & entry : entries_) {

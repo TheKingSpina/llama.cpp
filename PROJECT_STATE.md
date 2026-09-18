@@ -171,3 +171,13 @@ MCP Memory is available. This file is kept in the repository so the project stat
 - Also fixed an inverted zero-size assertion in the selftest (empty chunk transfer must produce an empty buffer).
 - Benchmarks on loopback, M3, battery (single-run relative references only, not normal-power baselines): 1 MiB round trip with 64 KiB chunks = 2.13 GiB/s and with 1 MiB chunks = 2.58 GiB/s; 4096-byte frames = 174.35 MiB/s; 256-byte frames = 8.51 MiB/s. Before TCP_NODELAY the 1 MiB run showed 1.5-5 second stalls.
 - Validation: `node-runtime-selftest` PASS, `test-batch-alloc` 30/198/0 PASS, `git diff --check` PASS, clean build for bench, selftest, and `llama-cli`.
+
+## Departure handshake block (2026-09-18)
+
+- Added graceful node departure: new `departure_message_type` (frame type 6, payload = node_id), `node_registry::mark_departed` setting the entry to `stopped`, and coordinator dispatch that closes the link and records the clean stop instead of waiting for heartbeat timeout.
+- Registry semantics: a stopped node stays stopped until re-registration returns it to running; heartbeats do not resurrect a stopped entry; `mark_departed` returns false for unknown node ids.
+- The coordinator receive path now dispatches by frame type (heartbeat, departure, unexpected type closes the link as a protocol violation) instead of expecting only heartbeats.
+- `node-runtime-client` sends the departure frame after its monitor window ends and prints `departure_sent node=<id>`.
+- Selftest coverage: unknown-id rejection, stopped transition, heartbeat non-resurrection, re-registration recovery, and the wire departure frame round trip.
+- End-to-end loopback smoke on the M3: coordinator `llama-node --port 49155 --monitor 5 --nodes 1` with one `node-runtime-client --monitor 3`; client sent 4 heartbeats, then `departure_sent`; coordinator logged `node ... departed cleanly` and the final registry JSON reported `state=2` (stopped) with the full capability record.
+- Validation: `node-runtime-selftest` PASS, `test-batch-alloc` 30/198/0 PASS, `git diff --check` PASS, clean build for selftest, `llama-node`, and `node-runtime-client`.

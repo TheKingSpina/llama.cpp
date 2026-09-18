@@ -99,5 +99,11 @@ int main(int argc, char ** argv) {
         // One heartbeat per interval keeps the link warm without flooding.
         std::this_thread::sleep_for(std::chrono::seconds(interval_seconds));
     } while (true);
+    // Announce a clean stop so the coordinator marks the entry stopped
+    // instead of waiting for a heartbeat timeout.
+    const std::string self_id = node_runtime::local_registration().capabilities.node_id;
+    if (node_runtime::send_message(client, node_runtime::departure_message_type, self_id.data(), self_id.size())) {
+        std::printf("departure_sent node=%s\n", self_id.c_str());
+    }
     return 0;
 }

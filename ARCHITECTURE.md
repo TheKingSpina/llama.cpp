@@ -18,6 +18,8 @@ When `--apple-telemetry on` is used, `common_params_print_info` also reports the
 
 The node module also provides a caller-driven `node_lifecycle` state machine. It creates versioned heartbeat messages, tracks heartbeat intervals, detects bounded timeout, and exposes explicit shutdown-requested and stopped states. Callers supply timestamps and invoke the methods; no background thread, timer, daemon, or inference integration is introduced.
 
+Nodes close their session with a graceful departure frame (type 6) carrying the node id. The coordinator marks the registry entry stopped, keeps it registered, and closes the link; a stopped entry is resurrected only by a later registration, not by heartbeats. The coordinator dispatches inbound frames by type and closes the link on unexpected frame types.
+
 Transport framing now supports experimental chunked transfer for payloads larger than one frame: one metadata frame followed by ordered data frames with sequence, size, and total validation on receipt. The peer must drain the stream concurrently, because a single-threaded send-then-receive over one connection deadlocks once bytes in flight exceed the socket buffers. Sockets enable TCP_NODELAY so many small frames do not interact with Nagle and delayed ACK.
 
 The experimental local scheduler is also standalone in `common/node-runtime`. It scores artificial tasks using compute work, memory feasibility, and network/storage penalties, then selects the lowest-cost candidate with deterministic candidate-ID tie breaking. It does not inspect or schedule ggml tensors and is disabled by default; the self-test covers only this artificial API.

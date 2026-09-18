@@ -198,17 +198,31 @@ int main(int argc, char ** argv) {
             any_active = true;
             node_runtime::framed_message heartbeat_frame;
             // A receive timeout is not a disconnect; the lifecycle timeout decides.
-            if (node_runtime::receive_message(entry.transport, heartbeat_frame, heartbeat_type, 1000) &&
-                heartbeat_frame.payload.size() == sizeof(node_runtime::heartbeat_message)) {
-                node_runtime::heartbeat_message heartbeat{};
-                std::memcpy(&heartbeat, heartbeat_frame.payload.data(), sizeof(heartbeat));
-                ++clock_ms;
-                registry.observe_heartbeat(entry.node_id, heartbeat.sequence, clock_ms);
-                if (!node_runtime::send_message(entry.transport, heartbeat_type, &heartbeat, sizeof(heartbeat))) {
+            if (node_runtime::receive_message(entry.transport, heartbeat_frame, 0, 1000)) {
+                if (heartbeat_frame.type == heartbeat_type &&
+                    heartbeat_frame.payload.size() == sizeof(node_runtime::heartbeat_message)) {
+                    node_runtime::heartbeat_message heartbeat{};
+                    std::memcpy(&heartbeat, heartbeat_frame.payload.data(), sizeof(heartbeat));
+                    ++clock_ms;
+                    registry.observe_heartbeat(entry.node_id, heartbeat.sequence, clock_ms);
+                    if (!node_runtime::send_message(entry.transport, heartbeat_type, &heartbeat, sizeof(heartbeat))) {
+                        entry.active = false;
+                        entry.transport.close();
+                        std::printf("llama-node: node send failed\n");
+                    }
+                } else if (heartbeat_frame.type == node_runtime::departure_message_type) {
+                    // Graceful departure: the node announced a clean stop.
+                    ++clock_ms;
+                    registry.mark_departed(entry.node_id, clock_ms);
                     entry.active = false;
                     entry.transport.close();
-                    std::printf("llama-node: node send failed\n");
-                    continue;
+                    std::printf("llama-node: node %s departed cleanly\n", entry.node_id.c_str());
+                } else {
+                    // Unknown frame type on a live link is a protocol violation.
+                    entry.active = false;
+                    entry.transport.close();
+                    std::printf("llama-node: node %s sent unexpected frame type %u\n",
+                                entry.node_id.c_str(), heartbeat_frame.type);
                 }
             } else if (registry.expire_stale(++clock_ms, 5) > 0) {
                 // Registry entries turn stale instead of being dropped; the
