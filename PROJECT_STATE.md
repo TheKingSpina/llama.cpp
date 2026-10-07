@@ -236,3 +236,147 @@ MCP Memory is available. This file is kept in the repository so the project stat
 - `expert-forward-check` extends to three paths: full-tensor reference, reader-slice rebuild, and cache-backed gather with eviction pressure (capacity two experts, gather four, exactly two evictions). All three outputs are bit-exact against each other through the real `ggml_mul_mat_id` graph.
 - The cache path is the integration blueprint for a real MoE layer: per token, gather the routed experts from cache, place planes at `e * expert_bytes` in a 3D tensor, compute, drop. Correctness invariant holds under eviction.
 - Validation: `expert-forward-check` PASS (bit-exact on all three paths, 2 evictions), `expert-catalog-selftest` PASS, `node-runtime-selftest` PASS, `test-batch-alloc` 30/198/0 PASS, `git diff --check` PASS, `llama-cli` builds clean.
+
+## M4 mini transport baseline block (2026-09-23, Role B)
+
+- First setup of the M4 mini (16 GB, AC power) per RUNBOOK.md Role B: branch `research/moe-expert-sharding` at `c9ae4b931`, cmake 4.4.3 installed via pip (no prior cmake on the machine), configured with GGML_METAL=ON, built expert-catalog-selftest, node-runtime-selftest, test-batch-alloc, node-runtime-bench.
+- Validation gate PASS: expert-catalog-selftest exit 0, node-runtime-selftest exit 0, test-batch-alloc failures 0; `git diff --check` PASS.
+- Loopback transport baseline (M4 mini, AC, 2026-09-23, artifact `benchmarks/baseline/2026-09-23-m4-loopback.log`): 1024-byte frames x 2000 exchanges, average RTT 0.014 ms (min 0.007, max 0.054), 70460.26 messages/s, 137.62 MiB/s. Local reference for the M4; not comparable with LAN numbers.
+- Negotiated media recorded: 1000baseT full-duplex on en0, MTU 1500.
+- Physical-link battery (1 KiB / 64 KiB / 1 MiB x 20 rounds between the two minis) not yet run: requires both minis on the switch simultaneously.
+
+## Physical-link battery attempt (2026-09-23, M4 mini)
+
+- LAN sweep of 192.168.178.0/24 (60 addresses pinged): no M1 mini found. Reachable hosts: M4 (minidiaessandro, .51), M3 Air (airdialessandro, .59), Raspberry Pi (.27), router/hub, and two other devices. `mac.wind3.hub` (.34) responds to ping but refuses port 22 (Remote Login off); mDNS shows no other Mac advertising SSH.
+- Conclusion: the M1 mini is powered off or disconnected from the switch. The physical-link battery (1 KiB / 64 KiB / 1 MiB x 20 rounds between the two minis) is blocked on that machine being available, per RUNBOOK Role B step 3.
+- Recorded as a finding, not a failure. No LAN numbers were produced, so no LAN claim is made. Loopback M4 baseline from the previous block stands as the only transport reference for the M4.
+- Next step unchanged: when the M1 mini is on the switch (and SSH reachable, or the user runs the commands locally there), run the three-size battery and append raw numbers to benchmarks/baseline/ in a dated file.
+
+## LAN sweep refinement (2026-09-23, M4 mini, follow-up)
+
+- Full subnet sweep .1-.254 (after user noted a mini does not sleep like a laptop): 14 hosts identified. The M1 mini is definitively NOT on the network, not a sleep/power-saving artifact. Found: M3 Air (.93 via DHCP on the Air, not .59 as ARP first showed), MBP (.170), iPhone (.198), iPad (.228), ESP32 (.176), APs (.30, .188), router (.1), Pi (.27), unknown printer-like host (.250), and this M4 (.51).
+- Correction to the previous block: `airdialessandro.wind3.hub` resolved to .59 in ARP cache but reverse DNS now gives .93 for `MacBookAir.wind3.hub` — the Air's DHCP lease may have moved; treat .59 as stale cache.
+- Conclusion stands: physical-link battery remains blocked on the M1 mini being physically connected. User informed; the machine likely needs manual power/cable attention.
+
+## M1 node reconnaissance (2026-08-30, recovered 2026-10-06)
+
+- Recovered from the M1 machine, where these blocks had been an uncommitted local edit with no copy in git. Preserved verbatim; see the recovery note in the 2026-10-06 blocks below.
+- Host: Macmini9,1, Apple M1, 8 GiB physical memory, 8 CPUs, arm64.
+- OS: macOS 26.0, Darwin 25.0, build 25A353.
+- Repository: branch `research/apple-silicon-baseline`, clean worktree, commit `ddb7a83e1` (`feat(apple): add opt-in runtime and node infrastructure`).
+- Active default route: Ethernet `en0`, IP `192.168.178.70`, gateway `192.168.178.1`, MTU 1500. The physical link speed and switch path were not yet measured at that time.
+- Thunderbolt Bridge `bridge0` and Ethernet adapters `en4`/`en5` are present, but no active IP/link path was established for them during reconnaissance.
+- Root volume: 228 GiB total, 106 GiB available. This is above the 30 GiB safety floor; no model or cache data was written.
+- Toolchain gap: `xcode-select` points to `/Library/Developer/CommandLineTools`; `cmake` and `ninja` are not currently available in PATH on this node.
+
+## M1 build validation (2026-08-30, recovered 2026-10-06)
+
+- Installed Homebrew `cmake 4.4.3` and `ninja 1.13.2` under `/opt/homebrew`; no sudo was required.
+- Configured isolated `build-m1/` Release build with Metal, native ARM tuning, tests, examples, and server enabled.
+- Build completed for `llama-cli`, `llama-bench`, `test-batch-alloc`, and `node-runtime-selftest` using `-j2`.
+- `llama-cli --version` confirms commit `ddb7a83e1`, AppleClang 17.0.0.17000319, Darwin arm64.
+- `node-runtime-selftest` passed.
+- `test-batch-alloc` passed: 30 tests, 198 assertions, 0 failures.
+- Configuration warnings: OpenMP and ccache are unavailable. Accelerate and Metal were detected. No inference benchmark was run yet on M1.
+
+## M1 model staging (2026-08-30, recovered 2026-10-06)
+
+- Downloaded `models/baseline/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` from the public `lmstudio-community/Qwen2.5-0.5B-Instruct-GGUF` repository.
+- Size: 379 MiB. SHA-256: `fa4d41b65761ed565cac6b5f62e35135d050408b033114a128ab308c02b2e83a`.
+- The checksum and size differ from the M3 baseline artifact (469 MB, SHA-256 `74a4da8c...`). Treat this as a staged M1 model until metadata and model identity are compared; do not compare benchmark numbers across the two files as if they were identical.
+- Internal free space after download: 105 GiB. The failed initial authenticated URL attempt left no model file; only a small Hugging Face cache directory remains.
+
+## Correction of the M1 availability finding (2026-10-06, M4 mini)
+
+- The two blocks above are wrong on the central point: the M1 mini was on the LAN the whole time. A passive mDNS service browse (`dns-sd -B _ssh._tcp local`) found `Mac mini di Alessandro (2)` immediately, and it resolves to `192.168.178.70`. The 2026-09-23 identification method (ping plus reverse DNS) missed it because the host had no reverse-DNS name; it appeared in the ARP cache only as the unnamed entry for `.70`. Discovery by mDNS is the correct method for a machine that is always on and advertises SSH.
+- The user states the two minis are on the same wired network with a router in between. The measurement does not support the router hop for this pair: `route -n get 192.168.178.70` on the M4 returns a direct host route on en0 with `LLINFO`, no gateway. So M4 and M1 are L2 adjacent on the same `192.168.178.0/24`. Any router in the topology is not on this path.
+- Verified M1 identity over SSH: `Mac-mini-di-Alessandro-2.local`, Apple M1, 8 GB, 8 CPUs, macOS 26.0, on AC power. Negotiated media on the M1: 1000baseT full-duplex flow-control, MTU 1500, matching the M4.
+- The M1 also moved from `192.168.178.51`-era assumptions: the M4 is `.50`, the Air `.93`. Addresses in the 2026-09-23 block (`.51`, `.59`) are stale.
+- Method finding, kept for the record: this block was produced with an agent-driven SSH session using an `SSH_ASKPASS` helper and a user-supplied password. No key was installed and no credential file was written.
+
+## LAN Role A smoke (2026-10-06, M4 mini coordinator, M1 mini worker)
+
+- First real M4/M1 connection; the state file previously said the cluster was on standby with no connections run.
+- M1 brought onto `research/moe-expert-sharding` @ `c9ae4b931` (it was on `research/apple-silicon-baseline` @ `86e2b4891` with binaries from 2026-08-31 and none of the departure-handshake code). Its uncommitted local `PROJECT_STATE.md` edit was first saved to `benchmarks/baseline/2026-10-06-m1-local-project-state.patch` (3397 bytes), then the worktree was cleaned and the branch checked out. The patch is untracked on the M1 and is the only copy of those 2026-08-30 M1 blocks.
+- M1 build note: `cmake` is installed under `/opt/homebrew/bin` and is absent from the non-interactive SSH PATH, so remote builds need an explicit PATH. The M1 has two build dirs; `build-m1/` is the RUNBOOK-configured one and was used.
+- Validation gate PASS on both machines: `node-runtime-selftest` exit 0 (M1 via `build-m1/`, M4 via `build/`).
+- Coordinator on the M4 needed `--bind 192.168.178.50`; the default bind is `127.0.0.1` and would not have been reachable from the M1.
+- Result: registration JSON with `node_id` `Mac-mini-di-Alessandro-2.local`, 5 heartbeats at 5 s, `departure_sent` from the client, coordinator logged `departed cleanly`, `state=2` (stopped), `reconnections=0`, final registry JSON complete. Clean loop over the real LAN.
+
+## LAN transport battery (2026-10-06, M4 mini to M1 mini, 20 rounds per size)
+
+- Blocked before this block: `node-runtime-bench` hardcoded `client.connect("127.0.0.1", ...)`, so the RUNBOOK Role B step 3 instruction to run it over the LAN could not be executed. The bench gained `--listen [--bind ADDRESS] PORT [message_count] [chunk_bytes]` and `--connect HOST PORT [message_bytes] [message_count] [chunk_bytes]`. The loopback default path is unchanged and was checked against the existing baseline.
+- Design constraints found while doing this, recorded because they are not obvious:
+  - `chunk_bytes` is the size the sender uses for data frames and the receiver validates against it (`receive_chunked` rejects a peer whose `meta.chunk_bytes` exceeds the limit passed in). Client and server must therefore be given the same value by hand; the bench does not negotiate it.
+  - The server does not pick the payload size, the client does. The server echoes whatever it receives.
+  - The listening side needs an explicit bind address to be reachable at all, since the default is loopback.
+  - `--listen` recycles its listener and serves one connection at a time, so a single server process covers a whole battery. This was verified with three clients in sequence.
+- LAN numbers, artifact `benchmarks/baseline/2026-10-06-m4-m1-lan-battery.log`, both machines on AC power, M4 as measuring client, M1 as echo server:
+  - 1 KiB, framed path: RTT avg 0.621 ms, min 0.525, max 1.160, 3.14 MiB/s.
+  - 64 KiB, chunked with chunk 65536: RTT avg 2.240 ms, min 1.996, max 3.965, 55.81 MiB/s.
+  - 1 MiB, chunked with chunk 1048576: RTT avg 18.820 ms, min 18.438, max 20.916, 106.27 MiB/s.
+- Reading: the small-frame RTT is roughly 45x the M4 loopback reference (0.014 ms at 1024 bytes) and the 1 MiB round trip settles near 106 MiB/s, far below the loopback 2.1-3.6 GiB/s range. These are single 20-round runs, taken once, with no repetition and no power or thermal guard beyond both machines being on AC. They are a first LAN reference, not a characterized link, and no claim is made about the switch or the router.
+- No inference path, ggml graph, or Metal kernel was touched. The only code change is the bench tool.
+- Not committed: no `git commit` and no push were run on either machine.
+
+## Recovery of the M1 local state file (2026-10-06, M4 mini)
+
+- The three M1 blocks above (reconnaissance, build validation, model staging, all 2026-08-30) existed only as an uncommitted edit on the M1, saved before the branch realignment as `benchmarks/baseline/2026-10-06-m1-local-project-state.patch` (3397 bytes, sha256 `8decebbf1989c6e79af270b4f9ebc298f5db4808b3f86062ecceb14d01352e9b`). They are now in this file, so the only copy is no longer an untracked local file. The patch file is still on the M1 and was not deleted.
+
+## Real MoE model acquisition (2026-10-06, M4 mini)
+
+- Acquired `models/moe/Qwen1.5-MoE-A2.7B_q4_k_m.gguf` from `gdax/Qwen1.5-MoE-A2.7B_gguf`. Size 9490338464 bytes, SHA-256 `09555491f85f40208e3999f3ced97b064f7c7c0b88bb3fedcbd5df51aad7d1ed`, matching the Hugging Face LFS oid exactly.
+- Chosen over the smaller-quant alternatives because the architecture is one the project already supports (`qwen2moe`). Note the real size is 9.49 GB, not the ~3 GB estimated when the choice was proposed: Qwen1.5-MoE-A2.7B has 14.3B total parameters and only 2.7B active, so every expert is stored even though few are used per token. Quantization level is irrelevant to the catalog, reader, and cache checks, which only read bytes.
+- First download attempt stalled at 5.74 GB with an empty error log, caused by the background process dying with its parent shell rather than by a network error. Restarted with `nohup` plus `disown` and resumed with `curl -C -`; checksum then matched.
+
+## Real-file catalog and reader verification (2026-10-06, Qwen1.5-MoE-A2.7B q4_k_m)
+
+- `expert_catalog::load_from_gguf` recognizes the real file: architecture `qwen2moe`, 24 MoE layers, 60 experts per layer, 8304721920 bytes of expert weights total. This closes the "not yet measured on a real MoE GGUF" gap recorded in the expert catalog block.
+- The layout exercised is the separate gate/up/down one (`ffn_gate_exps`, `ffn_up_exps`, `ffn_down_exps`), not the fused variant: the `gate_up` plane is empty and `down`+`gate`+`up` sum to `expert_bytes`. Two `down` slice sizes appear across layers, 3063808 and 1982464 bytes, so both shapes were checked.
+- Verified tools were built as throwaway binaries in `build/bin` and `build-m1/bin`, not added to the repository and not wired into any CMake target.
+
+## Real-file byte-exact gate (2026-10-06)
+
+- Added a temporary verifier that compares the selective path against the full path independently: each expert tensor is read as one contiguous block from the file, and every expert plane returned by `expert_reader` is compared with the matching region of that block. The full read does not go through `expert_reader`, so an error in the catalog offset cannot hide itself.
+- Layer 0 on the M4: gate, up, and down each compared across all 60 experts, 180 planes, 0 mismatches.
+- Layers 3, 12, and 23 on the M4, covering both `down` slice sizes: 180 planes each, 0 mismatches. Total on the M4: 720 planes, 0 mismatches.
+- Layers 0 and 3 on the M1: 180 planes each, 0 mismatches.
+- Conclusion, scope: the catalog offsets and the selective reader are byte-exact on this real Q4 file, across both slice shapes and on both machines. This proves the offset arithmetic and the read path only. It does not yet prove that weights rebuilt plane by plane produce the same forward result through `ggml_mul_mat_id` on real quantized data, which is the stronger gate and remains open.
+- No inference path was touched. No file under `tests/` was added. Nothing committed or pushed.
+
+## MoE model replication M4 to M1 (2026-10-06)
+
+- The design on this branch is replicated-weights: the model file lives on every node, each node loads only the router-selected experts, and no expert weights travel over the network. The RUNBOOK Role C already stated the file is on the M3 only and must be replicated per node, so replication is a manual per-node step by design, not a missing feature.
+- Replicated the Qwen model by copying from the M4 over the LAN rather than re-downloading from Hugging Face on the M1. Destination directory had to be created first and the `scp` destination path had to be absolute: `scp` resolves a relative destination against the login home, not the repository, and the first two attempts failed on that.
+- Result: 9490338464 bytes on the M1, SHA-256 identical to the M4 copy. `real-catalog` on the M1 returned the same numbers as the M4, and the first 16 bytes of expert 0 and expert 1 `down` planes were byte for byte identical to the M4 read. The two nodes are verified equivalent for this file.
+- Sustained throughput observed during the copy: 9490338464 bytes in roughly 82 s, about 116 MB/s. This is consistent with the 106 MiB/s measured by the 1 MiB transport battery, so the link behaves the same for bulk transfer and for round trips. Practical consequence: replicating a 7 to 9 GB model between these nodes takes one to two minutes, which is what makes replicated-weights viable on an 8 GB M1.
+
+## Open items after the 2026-10-06 blocks
+
+- The stronger real-file gate is closed. A forward `ggml_mul_mat_id` bit-exactness check on real quantized expert planes passes on both nodes; see the 2026-10-06 forward gate block for coverage and limits. `expert-forward-check` itself still generates only its own synthetic F32 file and was left unchanged, so promoting the real-file check into that permanent tool is remaining work.
+- `common/node-runtime-bench.cpp` is modified but uncommitted on both the M4 and the M1, with identical content. If either machine is realigned with origin the change is lost. The commit message is the user's to write.
+- SSH to the M1 uses an `SSH_ASKPASS` helper with a user-supplied password and no installed key. Installing the user's public key on the M1 would remove the password from the command path.
+- The measured bottleneck is the expert cache policy, not correctness. Decode is I/O bound at roughly 80 to 320 ms per token with near-zero hit rate, so the next step with real value is a hit-rate-driven or hot/cold segmented policy measured against this model. The routing traces used so far are synthetic and say nothing about real routing locality.
+- No commit and no push were performed in any of these blocks.
+
+## Selective-load viability measurement (2026-10-06, M4 mini, real Q4 model)
+
+- Question: a full load of the 9.49 GB model does not fit the 8 GB M1. Does the replicated-weights selective-load design actually make the model runnable, or does it only move the problem?
+- Model metadata that drives the answer: `qwen2moe.expert_used_count = 4`, `expert_count = 60`, 24 MoE layers, so a decode step touches 4 experts per layer. `expert_count` and `expert_used_count` were read from GGUF metadata, not assumed.
+- Arithmetic check: one decode step of top-4 across all 24 layers is about 0.51 GiB of expert weights, which fits the M1 with room to spare. This is the per-token figure and it turned out to be misleading, see below.
+- Measured with `expert_moe_runner` over `expert_cache` against the real file, serving real planes and consuming them so evictions happen:
+  - Worst case, routing changes every token: 8 tokens, 24 layers, top-4, 768 planes served, 4.12 GiB served and all of it re-read, hit rate 0.0%, about 317 ms per token of I/O with both a 512 MiB and a 2048 MiB cache. Evictions 675 and 395 respectively.
+  - Hot-set profile, 80 percent of requests drawn from a 12-expert set per layer, 32 tokens: hit rate still 0.0 percent at 512 MiB and 1.7 percent at 1024 MiB, about 106 and 80 ms per token, 16 GiB loaded.
+- Reading, stated plainly: the design does reduce the memory peak, because a node loads a few experts at a time instead of the whole 9.49 GB file, and that is what makes the M1 a candidate at all. It does not make decode faster. Decode stays I/O bound at roughly 80 to 320 ms per token depending on the working set, because the memory saving does not translate into speed without routing locality. A hot set of 12 experts per layer across 24 layers is about 1.5 GB of distinct experts, which does not fit the 512 MiB cache tested, so hit rate stayed near zero.
+- This is a finding, not a failure. It does not invalidate the design, it sets the expectation: the selective-load path is a memory-fit mechanism, and a hit-rate-driven or hot/cold segmented policy remains the recorded candidate improvement from the LRU block. The routing locality of a real tokenizer on real text was not measured; the traces here are synthetic routing and must not be read as a prediction of real hit rates.
+- The measurement tools were throwaway binaries in `build/bin`, built and then deleted. Nothing was added to the repository or to `tests/`.
+
+## Real-file forward bit-exact gate (2026-10-06)
+
+- This closes the gate left open by the previous block. The property that matters for production is now proven on real quantized data, not only on synthetic F32: weights rebuilt plane by plane from the selective reader compute the same result as the full tensors through the real `ggml_mul_mat_id` graph.
+- Graph, one MoE layer, same shape as the synthetic gate: `gate = gate_exps[:,:,id] @ b`, `up = up_exps[:,:,id] @ b`, `act = swiglu_split(gate, up)`, `out = down_exps[:,:,id] @ act`, with `b` reshaped to `[n_embd, n_used, n_tokens]` as `mul_mat_id` requires. Two token slots, both routed to expert 0.
+- Real shapes and mixed quantization from the file: `gate` and `up` are `q4_K` with ne `[2048, 1408, 60]`, `down` is `q8_0` with ne `[1408, 2048, 60]`. This is the mixed-type case the synthetic F32 gate could never exercise.
+- Alignment check performed before building the gate: every expert plane is an exact multiple of its block size (gate and up: 11264 blocks of the q4_K type per plane, 1622016 bytes; down: 90112 blocks, 3063808 bytes), so placing planes at `e * expert_bytes` never splits a quantization block. Rows are also block aligned (2048 elements is 8 blocks), which is what makes the per-row quant layout valid.
+- Result on the M4: 4096 output elements, 0 differing, bit-exact between the full contiguous read and the selectively rebuilt tensors. Same result on the M1. Both PASS.
+- Scope and limits, stated plainly: this covers one layer, one routed expert, two token slots, and CPU execution. It does not cover all 24 layers, a batch of tokens, the Metal backend, or more than one expert participating per token. Bit-exactness here means identical inputs to `mul_mat_id` produce identical outputs, which is the invariant selective loading must preserve; it is not a claim about numerical equivalence between quantized and unexpertised inference.
+- The tool was a throwaway binary, built and deleted. Nothing added to `tests/` or to the repository. No inference path was modified. Nothing committed or pushed.
